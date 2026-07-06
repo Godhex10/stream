@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StreamTogether — Movie Library</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --red: #E50914;
+    --red-dark: #b20710;
+    --red-glow: rgba(229,9,20,0.18);
+    --black: #000;
+    --dark: #0a0a0a;
+    --surface: #111111;
+    --surface2: #1a1a1a;
+    --border: rgba(255,255,255,0.08);
+    --border-hover: rgba(255,255,255,0.16);
+    --text: #ffffff;
+    --muted: #888888;
+    --muted2: #555555;
+    --imdb-gold: #f5c518;
+    --topbar-h: 54px;
+  }
+
+  html, body { min-height: 100%; background: var(--black); color: var(--text); font-family: 'DM Sans', sans-serif; }
+
+  /* TOP BAR */
+  .topbar {
+    height: var(--topbar-h);
+    background: rgba(10,10,10,0.98);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 2rem;
+    gap: 1.5rem;
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 100;
+  }
+  .logo-sm { font-family: 'Bebas Neue', sans-serif; font-size: 1.6rem; color: var(--red); text-decoration: none; letter-spacing: 0.04em; white-space: nowrap; }
+  .logo-sm span { color: #fff; }
+  .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 0.8rem; }
+
+  /* Source toggle */
+  .source-toggle {
+    display: flex;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .source-btn {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.78rem;
+    font-weight: 500;
+    padding: 0.4rem 0.9rem;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .source-btn.active { background: var(--red); color: #fff; }
+
+  /* MAIN CONTAINER */
+  .library-container { max-width: 1400px; margin: 0 auto; padding: calc(var(--topbar-h) + 2rem) 2rem 3rem 2rem; }
+
+  /* HEADER */
+  .library-header { margin-bottom: 2.5rem; text-align: center; }
+  .library-header h1 { font-family: 'Bebas Neue', sans-serif; font-size: 3rem; letter-spacing: 0.03em; margin-bottom: 0.5rem; }
+  .library-header p { color: var(--muted); font-size: 0.95rem; margin-bottom: 2rem; }
+
+  .search-wrapper { max-width: 600px; margin: 0 auto; display: flex; gap: 0.6rem; }
+  .search-input {
+    flex: 1; background: var(--surface); border: 1px solid var(--border-hover); border-radius: 8px;
+    padding: 0.85rem 1.2rem; color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 0.95rem;
+    outline: none; transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  .search-input:focus { border-color: var(--red); box-shadow: 0 0 12px var(--red-glow); }
+  .search-input::placeholder { color: var(--muted2); }
+  .btn-search {
+    background: var(--red); border: none; border-radius: 8px; color: #fff; padding: 0 1.8rem;
+    font-family: 'DM Sans', sans-serif; font-size: 0.9rem; font-weight: 600; cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+  }
+  .btn-search:hover { background: var(--red-dark); transform: scale(1.02); }
+
+  /* GENRE FILTERS */
+  .genre-filters { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 2rem; justify-content: center; }
+  .genre-pill {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 20px;
+    color: var(--muted); font-size: 0.78rem; font-weight: 500; padding: 0.35rem 0.9rem;
+    cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .genre-pill:hover, .genre-pill.active { background: var(--red); color: #fff; border-color: var(--red); }
+
+  /* GRID */
+  .grid-section-title {
+    font-family: 'Bebas Neue', sans-serif; font-size: 1.6rem; letter-spacing: 0.05em;
+    margin-bottom: 1.2rem; color: var(--text); border-left: 3px solid var(--red); padding-left: 0.6rem;
+    display: flex; align-items: center; gap: 1rem;
+  }
+  .grid-loader { font-size: 0.8rem; color: var(--muted); font-family: 'DM Sans', sans-serif; font-weight: 400; letter-spacing: 0; }
+
+  .movies-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 1.8rem;
+    margin-bottom: 3rem;
+  }
+
+  /* MOVIE CARD */
+  .movie-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    overflow: hidden; cursor: pointer;
+    transition: transform 0.25s cubic-bezier(0.2,0.8,0.2,1), border-color 0.2s, box-shadow 0.2s;
+    display: flex; flex-direction: column; position: relative;
+  }
+  .movie-card:hover { transform: translateY(-8px); border-color: var(--border-hover); box-shadow: 0 10px 20px rgba(0,0,0,0.5); }
+  .movie-card.loading-streams { opacity: 0.7; pointer-events: none; }
+
+  .poster-wrap { position: relative; aspect-ratio: 2/3; width: 100%; background: var(--surface2); overflow: hidden; }
+  .poster-img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.4s ease; }
+  .movie-card:hover .poster-img { transform: scale(1.05); }
+
+  /* Format badge */
+  .format-badge {
+    position: absolute; top: 8px; right: 8px;
+    font-size: 0.62rem; font-weight: 700; letter-spacing: 0.06em;
+    padding: 2px 7px; border-radius: 4px;
+    backdrop-filter: blur(4px);
+  }
+  .format-badge.mp4  { background: rgba(15,157,88,0.85); border: 1px solid rgba(15,157,88,0.6); color: #fff; }
+  .format-badge.mkv  { background: rgba(229,9,20,0.85);  border: 1px solid rgba(229,9,20,0.6);  color: #fff; }
+  .format-badge.webm { background: rgba(26,115,232,0.85); border: 1px solid rgba(26,115,232,0.6); color: #fff; }
+  .format-badge.loading { background: rgba(0,0,0,0.6); border: 1px solid var(--border-hover); color: var(--muted); }
+  .format-badge.none { background: rgba(0,0,0,0.6); border: 1px solid var(--border-hover); color: var(--muted2); }
+
+  .card-overlay-btn {
+    position: absolute; inset: 0; background: rgba(0,0,0,0.6);
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0; transition: opacity 0.2s ease;
+  }
+  .movie-card:hover .card-overlay-btn { opacity: 1; }
+  .play-badge {
+    background: var(--red); color: #fff; font-size: 0.8rem; font-weight: 600;
+    padding: 0.5rem 1rem; border-radius: 20px;
+    transform: translateY(10px); transition: transform 0.2s ease;
+  }
+  .movie-card:hover .play-badge { transform: translateY(0); }
+
+  /* Stream picker modal */
+  .stream-modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+    z-index: 200; display: flex; align-items: center; justify-content: center;
+    padding: 1rem; opacity: 0; pointer-events: none; transition: opacity 0.2s;
+  }
+  .stream-modal-overlay.open { opacity: 1; pointer-events: all; }
+  .stream-modal {
+    background: var(--surface); border: 1px solid var(--border-hover);
+    border-radius: 14px; padding: 1.8rem; width: 100%; max-width: 520px;
+    max-height: 80vh; overflow-y: auto;
+    transform: scale(0.95); transition: transform 0.2s;
+  }
+  .stream-modal-overlay.open .stream-modal { transform: scale(1); }
+  .stream-modal h3 { font-family: 'Bebas Neue', sans-serif; font-size: 1.6rem; letter-spacing: 0.04em; margin-bottom: 0.3rem; }
+  .stream-modal-sub { font-size: 0.82rem; color: var(--muted); margin-bottom: 1.2rem; }
+  .stream-list { display: flex; flex-direction: column; gap: 0.6rem; }
+  .stream-item {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0.8rem 1rem;
+    display: flex; align-items: center; gap: 0.8rem;
+    cursor: pointer; transition: border-color 0.15s, background 0.15s;
+  }
+  .stream-item:hover { border-color: var(--red); background: rgba(229,9,20,0.06); }
+  .stream-fmt {
+    font-size: 0.65rem; font-weight: 700; letter-spacing: 0.06em;
+    padding: 2px 7px; border-radius: 4px; flex-shrink: 0;
+  }
+  .stream-fmt.mp4  { background: rgba(15,157,88,0.2);  color: #4caf50; border: 1px solid rgba(15,157,88,0.3); }
+  .stream-fmt.mkv  { background: rgba(229,9,20,0.2);   color: #ff6b6b; border: 1px solid rgba(229,9,20,0.3); }
+  .stream-fmt.webm { background: rgba(26,115,232,0.2); color: #64b5f6; border: 1px solid rgba(26,115,232,0.3); }
+  .stream-fmt.other { background: rgba(255,255,255,0.05); color: var(--muted); border: 1px solid var(--border); }
+  .stream-info { flex: 1; min-width: 0; }
+  .stream-name { font-size: 0.85rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stream-meta { font-size: 0.72rem; color: var(--muted); margin-top: 0.15rem; }
+  .stream-quality {
+    font-size: 0.7rem; font-weight: 600; color: var(--imdb-gold);
+    background: rgba(245,197,24,0.1); border: 1px solid rgba(245,197,24,0.2);
+    padding: 1px 6px; border-radius: 4px; flex-shrink: 0;
+  }
+  .stream-play-btn {
+    background: var(--red); border: none; border-radius: 6px;
+    color: #fff; font-size: 0.75rem; font-weight: 600;
+    padding: 0.35rem 0.8rem; cursor: pointer; flex-shrink: 0;
+    transition: background 0.15s;
+  }
+  .stream-play-btn:hover { background: var(--red-dark); }
+  .stream-modal-close {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--muted); padding: 0.6rem 1rem;
+    font-family: 'DM Sans', sans-serif; font-size: 0.85rem;
+    cursor: pointer; width: 100%; margin-top: 1rem;
+    transition: color 0.15s;
+  }
+  .stream-modal-close:hover { color: var(--text); }
+
+  .movie-details { padding: 0.9rem; display: flex; flex-direction: column; flex: 1; }
+  .movie-title { font-size: 0.9rem; font-weight: 600; margin-bottom: 0.3rem; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .movie-meta-row { display: flex; align-items: center; justify-content: space-between; font-size: 0.75rem; color: var(--muted); margin-top: auto; }
+  .movie-rating { display: flex; align-items: center; gap: 0.25rem; color: var(--text); font-weight: 500; }
+  .rating-star { color: var(--imdb-gold); }
+
+  /* Status/skeleton */
+  .status-message { grid-column: 1/-1; text-align: center; padding: 3rem 1rem; color: var(--muted); font-size: 0.95rem; }
+  .skeleton-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .skeleton-poster { aspect-ratio: 2/3; background: linear-gradient(90deg, var(--surface2) 25%, #222 50%, var(--surface2) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
+  .skeleton-details { padding: 0.9rem; }
+  .skeleton-line { height: 12px; background: var(--surface2); border-radius: 4px; margin-bottom: 0.5rem; animation: shimmer 1.5s infinite; }
+  .skeleton-line.short { width: 60%; }
+  @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+
+  /* Local movies section */
+  .local-section { margin-bottom: 3rem; }
+  .local-add-btn {
+    display: flex; align-items: center; gap: 0.5rem;
+    background: var(--surface); border: 1px dashed var(--border-hover);
+    border-radius: 10px; color: var(--muted); padding: 1rem;
+    cursor: pointer; font-family: 'DM Sans', sans-serif; font-size: 0.85rem;
+    aspect-ratio: 2/3; flex-direction: column; justify-content: center;
+    text-align: center; transition: border-color 0.2s, color 0.2s;
+  }
+  .local-add-btn:hover { border-color: var(--red); color: var(--text); }
+
+  @media (max-width: 768px) {
+    .topbar { padding: 0 1rem; }
+    .library-container { padding: calc(var(--topbar-h) + 1.5rem) 1rem 2rem 1rem; }
+    .library-header h1 { font-size: 2.3rem; }
+    .movies-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 1rem; }
+    .movie-title { font-size: 0.82rem; }
+    .movie-details { padding: 0.6rem; }
+    .source-btn span { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <a class="logo-sm" href="index.html">Stream<span>Together</span></a>
+  <div class="topbar-right">
+    <div class="source-toggle">
+      <button class="source-btn active" data-source="stremio">🌐 <span>Stremio</span></button>
+      <button class="source-btn" data-source="local">📁 <span>Local</span></button>
+    </div>
+  </div>
+</div>
+
+<div class="library-container">
+  <div class="library-header">
+    <h1>Movie Library</h1>
+    <p id="librarySubtitle">Browse millions of movies — powered by Cinemeta & Torrentio</p>
+    <div class="search-wrapper">
+      <input type="text" class="search-input" id="librarySearchInput" placeholder="Search movies..." autocomplete="off">
+      <button class="btn-search" id="searchBtn">Search</button>
+    </div>
+  </div>
+
+  <!-- Genre filters (Stremio mode) -->
+  <div class="genre-filters" id="genreFilters">
+    <button class="genre-pill active" data-genre="">🎬 All</button>
+    <button class="genre-pill" data-genre="action">💥 Action</button>
+    <button class="genre-pill" data-genre="comedy">😂 Comedy</button>
+    <button class="genre-pill" data-genre="drama">🎭 Drama</button>
+    <button class="genre-pill" data-genre="horror">😱 Horror</button>
+    <button class="genre-pill" data-genre="scifi">🚀 Sci-Fi</button>
+    <button class="genre-pill" data-genre="romance">❤️ Romance</button>
+    <button class="genre-pill" data-genre="thriller">🕵️ Thriller</button>
+    <button class="genre-pill" data-genre="animation">🎨 Animation</button>
+  </div>
+
+  <h2 class="grid-section-title" id="gridTitle">
+    Popular Now
+    <span class="grid-loader" id="gridLoader"></span>
+  </h2>
+  <div class="movies-grid" id="moviesGrid"></div>
+</div>
+
+<!-- Stream picker modal -->
+<div class="stream-modal-overlay" id="streamModal">
+  <div class="stream-modal">
+    <h3 id="streamModalTitle">Pick a Stream</h3>
+    <p class="stream-modal-sub" id="streamModalSub">Choose a quality. Green = MP4 (plays in browser). Red = MKV (needs conversion).</p>
+    <div class="stream-list" id="streamList"></div>
+    <button class="stream-modal-close" id="streamModalClose">Cancel</button>
+  </div>
+</div>
+
+<script>
+/* ══════════════════════════════════════════════
+    CONFIG
+══════════════════════════════════════════════ */
+const CINEMETA_BASE  = 'https://v3-cinemeta.strem.io';
+const TORRENTIO_BASE = 'https://torrentio.strem.fun';
+
+// Your local movies — add entries here whenever you put a file in /movies/
+const LOCAL_MOVIES = [
+  {
+    title: 'Call of My Life',
+    year: 2024,
+    rating: 8.0,
+    poster: 'posters/sample-mp4.jpg',
+    file: 'movies/callofmylife.mp4'
+  }
+  // Add more:
+  // { title: 'Movie Name', year: 2023, rating: 7.5, poster: 'posters/name.jpg', file: 'movies/name.mp4' }
+];
+
+/* ══════════════════════════════════════════════
+    STATE
+══════════════════════════════════════════════ */
+let currentSource  = 'stremio'; // 'stremio' | 'local'
+let currentGenre   = '';
+let currentSearch  = '';
+let selectedMovie  = null;
+
+const moviesGrid    = document.getElementById('moviesGrid');
+const searchInput   = document.getElementById('librarySearchInput');
+const gridTitle     = document.getElementById('gridTitle').childNodes[0];
+const gridLoader    = document.getElementById('gridLoader');
+const streamModal   = document.getElementById('streamModal');
+const streamList    = document.getElementById('streamList');
+
+/* ══════════════════════════════════════════════
+    SOURCE TOGGLE
+══════════════════════════════════════════════ */
+document.querySelectorAll('.source-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.source-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentSource = btn.dataset.source;
+    currentSearch = '';
+    searchInput.value = '';
+    document.getElementById('genreFilters').style.display = currentSource === 'stremio' ? 'flex' : 'none';
+    document.getElementById('librarySubtitle').textContent = currentSource === 'stremio'
+      ? 'Browse millions of movies — powered by Cinemeta & Torrentio'
+      : 'Your locally saved movies';
+    if (currentSource === 'stremio') loadStremio();
+    else renderLocalMovies();
+  });
+});
+
+/* ══════════════════════════════════════════════
+    GENRE PILLS
+══════════════════════════════════════════════ */
+document.querySelectorAll('.genre-pill').forEach(pill => {
+  pill.addEventListener('click', () => {
+    document.querySelectorAll('.genre-pill').forEach(p => p.classList.remove('active'));
+    pill.classList.add('active');
+    currentGenre  = pill.dataset.genre;
+    currentSearch = '';
+    searchInput.value = '';
+    loadStremio();
+  });
+});
+
+/* ══════════════════════════════════════════════
+    SEARCH
+══════════════════════════════════════════════ */
+document.getElementById('searchBtn').addEventListener('click', doSearch);
+searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+searchInput.addEventListener('input',   () => { if (!searchInput.value.trim()) { currentSearch = ''; if (currentSource === 'stremio') loadStremio(); else renderLocalMovies(); } });
+
+function doSearch() {
+  currentSearch = searchInput.value.trim();
+  if (!currentSearch) return;
+  if (currentSource === 'stremio') searchCinemeta(currentSearch);
+  else {
+    const q = currentSearch.toLowerCase();
+    renderCards(LOCAL_MOVIES.filter(m => m.title.toLowerCase().includes(q)), 'local');
+  }
+}
+
+/* ══════════════════════════════════════════════
+    CINEMETA — fetch movie catalogue
+══════════════════════════════════════════════ */
+async function loadStremio() {
+  setLoading(true);
+  gridTitle.textContent = currentGenre
+    ? currentGenre.charAt(0).toUpperCase() + currentGenre.slice(1) + ' Movies'
+    : 'Popular Now';
+
+  try {
+    let url;
+    if (currentGenre) {
+      // Cinemeta genre catalogue
+      url = `${CINEMETA_BASE}/catalog/movie/top/genre=${encodeURIComponent(capitaliseGenre(currentGenre))}.json`;
+    } else {
+      url = `${CINEMETA_BASE}/catalog/movie/top.json`;
+    }
+    const res  = await fetch(url);
+    const data = await res.json();
+    renderCards(data.metas || [], 'stremio');
+  } catch (e) {
+    console.error('Cinemeta fetch failed:', e);
+    showError('Could not load movies — check your internet connection.');
+  }
+  setLoading(false);
+}
+
+async function searchCinemeta(query) {
+  setLoading(true);
+  gridTitle.textContent = `Results for "${query}"`;
+  try {
+    const url  = `${CINEMETA_BASE}/catalog/movie/top/search=${encodeURIComponent(query)}.json`;
+    const res  = await fetch(url);
+    const data = await res.json();
+    renderCards(data.metas || [], 'stremio');
+  } catch (e) {
+    showError('Search failed — try again.');
+  }
+  setLoading(false);
+}
+
+function capitaliseGenre(g) {
+  const map = { scifi: 'Sci-Fi', action: 'Action', comedy: 'Comedy', drama: 'Drama', horror: 'Horror', romance: 'Romance', thriller: 'Thriller', animation: 'Animation' };
+  return map[g] || g.charAt(0).toUpperCase() + g.slice(1);
+}
+
+/* ══════════════════════════════════════════════
+    RENDER CARDS
+══════════════════════════════════════════════ */
+function renderCards(movies, source) {
+  moviesGrid.innerHTML = '';
+
+  if (!movies || movies.length === 0) {
+    moviesGrid.innerHTML = `<div class="status-message">No movies found. Try a different search or genre.</div>`;
+    return;
+  }
+
+  movies.slice(0, 60).forEach(movie => {
+    const card = document.createElement('div');
+    card.className = 'movie-card';
+
+    if (source === 'stremio') {
+      const poster  = movie.poster || movie.background || '';
+      const title   = escapeHTML(movie.name || movie.title || 'Unknown');
+      const year    = movie.year || movie.releaseInfo || '';
+      const rating  = movie.imdbRating ? parseFloat(movie.imdbRating).toFixed(1) : (movie.rating ? parseFloat(movie.rating).toFixed(1) : 'N/A');
+
+      card.innerHTML = `
+        <div class="poster-wrap">
+          <img class="poster-img" src="${escapeHTML(poster)}" alt="${title}" loading="lazy" onerror="this.src='${FALLBACK_POSTER}'">
+          <span class="format-badge loading" id="fmt_${movie.id}">…</span>
+          <div class="card-overlay-btn"><span class="play-badge">▶ Watch</span></div>
+        </div>
+        <div class="movie-details">
+          <h3 class="movie-title" title="${title}">${title}</h3>
+          <div class="movie-meta-row">
+            <span>${year}</span>
+            <span class="movie-rating"><span class="rating-star">★</span> ${rating}</span>
+          </div>
+        </div>
+      `;
+
+      card.addEventListener('click', () => openStreamPicker(movie));
+
+      // Lazy-load the best format badge without blocking the UI
+      setTimeout(() => fetchBestFormat(movie.id), 100);
+
+    } else {
+      // Local movie
+      const posterUrl = movie.poster || FALLBACK_POSTER;
+      const fmt       = (movie.file.split('.').pop() || 'mp4').toLowerCase();
+      const fmtClass  = ['mp4','webm'].includes(fmt) ? fmt : 'mkv';
+      const rating    = movie.rating ? movie.rating.toFixed(1) : 'N/A';
+
+      card.innerHTML = `
+        <div class="poster-wrap">
+          <img class="poster-img" src="${escapeHTML(posterUrl)}" alt="${escapeHTML(movie.title)}" loading="lazy" onerror="this.src='${FALLBACK_POSTER}'">
+          <span class="format-badge ${fmtClass}">${fmt.toUpperCase()}</span>
+          <div class="card-overlay-btn"><span class="play-badge">▶ Watch</span></div>
+        </div>
+        <div class="movie-details">
+          <h3 class="movie-title" title="${escapeHTML(movie.title)}">${escapeHTML(movie.title)}</h3>
+          <div class="movie-meta-row">
+            <span>${movie.year || ''}</span>
+            <span class="movie-rating"><span class="rating-star">★</span> ${rating}</span>
+          </div>
+        </div>
+      `;
+
+      card.addEventListener('click', () => launchRoom(movie.file, movie.title));
+    }
+
+    moviesGrid.appendChild(card);
+  });
+}
+
+/* ══════════════════════════════════════════════
+    LOCAL MOVIES
+══════════════════════════════════════════════ */
+function renderLocalMovies() {
+  gridTitle.textContent = 'Your Local Movies';
+  renderCards(LOCAL_MOVIES, 'local');
+}
+
+/* ══════════════════════════════════════════════
+    TORRENTIO — fetch streams + format badge
+══════════════════════════════════════════════ */
+// Cache so we don't refetch on re-render
+const streamCache = {};
+
+async function fetchBestFormat(imdbId) {
+  if (!imdbId) return;
+  try {
+    const url  = `${TORRENTIO_BASE}/stream/movie/${imdbId}.json`;
+    const res  = await fetch(url);
+    const data = await res.json();
+    const streams = data.streams || [];
+
+    // Find the best format from available streams
+    let fmt = 'none';
+    if (streams.length > 0) {
+      const hasMp4  = streams.some(s => getMagnetFmt(s) === 'mp4');
+      const hasWebm = streams.some(s => getMagnetFmt(s) === 'webm');
+      const hasMkv  = streams.some(s => getMagnetFmt(s) === 'mkv');
+      fmt = hasMp4 ? 'mp4' : hasWebm ? 'webm' : hasMkv ? 'mkv' : 'other';
+    }
+
+    streamCache[imdbId] = streams;
+
+    const badge = document.getElementById('fmt_' + imdbId);
+    if (badge) {
+      badge.textContent  = fmt === 'none' ? 'N/A' : fmt.toUpperCase();
+      badge.className    = 'format-badge ' + (fmt === 'none' ? 'none' : fmt);
+    }
+  } catch (e) {
+    const badge = document.getElementById('fmt_' + imdbId);
+    if (badge) { badge.textContent = '?'; badge.className = 'format-badge none'; }
+  }
+}
+
+function getMagnetFmt(stream) {
+  const name = (stream.name || stream.title || '').toLowerCase();
+  if (name.includes('.mp4') || name.includes('mp4')) return 'mp4';
+  if (name.includes('.webm') || name.includes('webm')) return 'webm';
+  if (name.includes('.mkv') || name.includes('mkv')) return 'mkv';
+  return 'other';
+}
+
+function getQualityLabel(stream) {
+  const name = (stream.name || stream.title || '');
+  const match = name.match(/4K|2160p|1080p|720p|480p|360p/i);
+  return match ? match[0] : '';
+}
+
+/* ══════════════════════════════════════════════
+    STREAM PICKER MODAL
+══════════════════════════════════════════════ */
+async function openStreamPicker(movie) {
+  selectedMovie = movie;
+  document.getElementById('streamModalTitle').textContent = movie.name || movie.title;
+  document.getElementById('streamModalSub').textContent = 'Fetching available streams…';
+  streamList.innerHTML = `<div style="color:var(--muted);font-size:0.85rem;padding:1rem 0;text-align:center;">Loading streams…</div>`;
+  streamModal.classList.add('open');
+
+  try {
+    let streams = streamCache[movie.id];
+    if (!streams) {
+      const url  = `${TORRENTIO_BASE}/stream/movie/${movie.id}.json`;
+      const res  = await fetch(url);
+      const data = await res.json();
+      streams    = data.streams || [];
+      streamCache[movie.id] = streams;
+    }
+
+    if (streams.length === 0) {
+      streamList.innerHTML = `<div class="status-message">No streams found for this movie.</div>`;
+      document.getElementById('streamModalSub').textContent = 'No streams available.';
+      return;
+    }
+
+    document.getElementById('streamModalSub').textContent =
+      `${streams.length} stream${streams.length !== 1 ? 's' : ''} found. All formats work — magnet links route through Webtor.io automatically.`;
+
+    streamList.innerHTML = '';
+    // Sort: mp4 first, then webm, then mkv, then other
+    const sorted = [...streams].sort((a, b) => {
+      const order = { mp4: 0, webm: 1, mkv: 2, other: 3 };
+      return (order[getMagnetFmt(a)] || 3) - (order[getMagnetFmt(b)] || 3);
+    });
+
+    sorted.slice(0, 20).forEach(stream => {
+      const fmt      = getMagnetFmt(stream);
+      const quality  = getQualityLabel(stream);
+      const name     = stream.name || stream.title || 'Unknown source';
+      const seeders  = stream.seeders ? `${stream.seeders} seeders` : '';
+      const size     = stream.size ? formatBytes(stream.size) : '';
+      const meta     = [seeders, size].filter(Boolean).join(' · ');
+
+      // Get the actual streamable URL
+      // Torrentio free returns either a direct URL or a magnet link
+      const streamUrl = stream.url || stream.infoHash
+        ? (stream.url || `magnet:?xt=urn:btih:${stream.infoHash}`)
+        : null;
+
+      if (!streamUrl) return;
+
+      const isMagnetLink = !stream.url && stream.infoHash;
+      const playLabel    = isMagnetLink ? '▶ Via Webtor' : '▶ Play';
+      const metaNote     = isMagnetLink ? (meta ? meta + ' · via Webtor.io' : 'via Webtor.io') : meta;
+
+      const item = document.createElement('div');
+      item.className = 'stream-item';
+      item.innerHTML = `
+        <span class="stream-fmt ${fmt}">${fmt.toUpperCase()}</span>
+        <div class="stream-info">
+          <div class="stream-name">${escapeHTML(name)}</div>
+          ${metaNote ? `<div class="stream-meta">${escapeHTML(metaNote)}</div>` : ''}
+        </div>
+        ${quality ? `<span class="stream-quality">${quality}</span>` : ''}
+        <button class="stream-play-btn">${playLabel}</button>
+      `;
+
+      item.querySelector('.stream-play-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        streamModal.classList.remove('open');
+        launchRoom(streamUrl, movie.name || movie.title);
+      });
+
+      item.addEventListener('click', () => {
+        streamModal.classList.remove('open');
+        launchRoom(streamUrl, movie.name || movie.title);
+      });
+
+      streamList.appendChild(item);
+    });
+
+  } catch (e) {
+    console.error('Stream fetch failed:', e);
+    streamList.innerHTML = `<div class="status-message">Failed to fetch streams. Check your connection.</div>`;
+  }
+}
+
+document.getElementById('streamModalClose').addEventListener('click', () => streamModal.classList.remove('open'));
+streamModal.addEventListener('click', e => { if (e.target === streamModal) streamModal.classList.remove('open'); });
+
+/* ══════════════════════════════════════════════
+    WEBTOR — convert magnet/infoHash to browser-playable URL
+    Webtor.io handles the torrent server-side and returns
+    a streamable HTTP URL the <video> tag can actually play.
+══════════════════════════════════════════════ */
+function magnetToWebtor(magnetOrInfoHash) {
+  // Webtor embed API: pass the magnet link as a parameter
+  // It transcodes MKV→browser-friendly format on their servers
+  const encoded = encodeURIComponent(magnetOrInfoHash);
+  return `https://webtor.io/api/stream?magnet=${encoded}`;
+}
+
+function isMagnet(url) {
+  return url && (url.startsWith('magnet:') || url.startsWith('magnet%3A'));
+}
+
+function resolveStreamUrl(rawUrl) {
+  if (!rawUrl) return null;
+  if (isMagnet(rawUrl)) {
+    return magnetToWebtor(rawUrl);
+  }
+  return rawUrl; // already a direct HTTP URL, use as-is
+}
+
+/* ══════════════════════════════════════════════
+    LAUNCH ROOM
+══════════════════════════════════════════════ */
+function launchRoom(streamUrl, title) {
+  const finalUrl = resolveStreamUrl(streamUrl);
+  if (!finalUrl) {
+    alert('Could not resolve a playable URL for this stream.');
+    return;
+  }
+  const roomId = 'room_' + Math.random().toString(36).slice(2, 9);
+  const url    = `room.html?room=${encodeURIComponent(roomId)}`
+               + `&stream=${encodeURIComponent(finalUrl)}`
+               + `&title=${encodeURIComponent(title)}`;
+  window.location.href = url;
+}
+
+/* ══════════════════════════════════════════════
+    UTILITIES
+══════════════════════════════════════════════ */
+const FALLBACK_POSTER = 'data:image/svg+xml,' + encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450" viewBox="0 0 300 450">
+     <rect width="300" height="450" fill="#1a1a1a"/>
+     <text x="50%" y="50%" fill="#555" font-family="sans-serif" font-size="18"
+           text-anchor="middle" dominant-baseline="middle">No Poster</text>
+   </svg>`
+);
+
+function setLoading(on) {
+  gridLoader.textContent = on ? '— loading…' : '';
+}
+
+function showError(msg) {
+  moviesGrid.innerHTML = `<div class="status-message">⚠️ ${escapeHTML(msg)}</div>`;
+}
+
+function escapeHTML(str) {
+  return String(str || '').replace(/[&<>'"]/g,
+    t => ({ '&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;' }[t] || t)
+  );
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '';
+  if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB';
+  if (bytes >= 1e6) return (bytes / 1e6).toFixed(0) + ' MB';
+  return bytes + ' B';
+}
+
+/* ══════════════════════════════════════════════
+    INIT
+══════════════════════════════════════════════ */
+window.addEventListener('DOMContentLoaded', () => {
+  loadStremio();
+});
+</script>
+</body>
+</html>
