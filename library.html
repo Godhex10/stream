@@ -303,7 +303,6 @@
     CONFIG
 ══════════════════════════════════════════════ */
 const CINEMETA_BASE  = 'https://v3-cinemeta.strem.io';
-const TORRENTIO_BASE = 'https://torrentio.strem.fun';
 
 // Your local movies — add entries here whenever you put a file in /movies/
 const LOCAL_MOVIES = [
@@ -508,53 +507,137 @@ function renderLocalMovies() {
 }
 
 /* ══════════════════════════════════════════════
-    TORRENTIO — fetch streams + format badge
+    STREAM SOURCES — Torrentio + Comet + MediaFusion in parallel
+    All three use the same Stremio addon API format.
+    Results are merged, deduplicated and sorted by quality.
 ══════════════════════════════════════════════ */
-// Cache so we don't refetch on re-render
+const TORRENTIO_BASE   = 'https://torrentio.strem.fun';
+const COMET_BASE       = 'https://comet.elfhosted.com';
+const MEDIAFUSION_BASE = 'https://mediafusion.elfhosted.com';
+
+// Cache per imdbId — stores merged results from all sources
 const streamCache = {};
 
+// Source labels so user knows where each result came from
+const SOURCE_LABELS = {
+  torrentio:   { label: 'Torrentio',   color: '#f4b400' },
+  comet:       { label: 'Comet',       color: '#00bcd4' },
+  mediafusion: { label: 'MediaFusion', color: '#9c27b0' }
+};
+
+/* Fetch streams from a single source safely — never throws */
+async function fetchFromSource(url, sourceName) {
+  try {
+    const controller = new AbortController();
+    const timeout    = setTimeout(() => controller.abort(), 8000); // 8s timeout per source
+    const res  = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) return [];
+    const data = await res.json();
+    const streams = (data.streams || []).map(s => ({ ...s, _source: sourceName }));
+    console.log(`[${sourceName}] ${streams.length} streams found`);
+    return streams;
+  } catch (e) {
+    console.warn(`[${sourceName}] Failed:`, e.message);
+    return [];
+  }
+}
+
+/* Fetch from all three sources in parallel */
+async function fetchAllStreams(imdbId) {
+  if (streamCache[imdbId]) return streamCache[imdbId];
+
+  console.log(`[Streams] Fetching from all sources for ${imdbId}…`);
+
+  const [torrentioStreams, cometStreams, mediafusionStreams] = await Promise.all([
+    fetchFromSource(`${TORRENTIO_BASE}/stream/movie/${imdbId}.json`, 'torrentio'),
+    fetchFromSource(`${COMET_BASE}/stream/movie/${imdbId}.json`, 'comet'),
+    fetchFromSource(`${MEDIAFUSION_BASE}/stream/movie/${imdbId}.json`, 'mediafusion')
+  ]);
+
+  // Merge and deduplicate by infoHash
+  const seen   = new Set();
+  const merged = [];
+
+  for (const stream of [...torrentioStreams, ...cometStreams, ...mediafusionStreams]) {
+    const key = stream.infoHash || stream.url || (stream.name + stream.title);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(stream);
+  }
+
+  console.log(`[Streams] Total unique: ${merged.length} (Torrentio: ${torrentioStreams.length}, Comet: ${cometStreams.length}, MediaFusion: ${mediafusionStreams.length})`);
+
+  streamCache[imdbId] = merged;
+  return merged;
+}
+
+/* Parse format from stream name */
+function getMagnetFmt(stream) {
+  const name = (stream.name || stream.title || stream.behaviorHints?.filename || '').toLowerCase();
+  if (name.includes('.mp4')  || name.includes('mp4'))  return 'mp4';
+  if (name.includes('.webm') || name.includes('webm')) return 'webm';
+  if (name.includes('.mkv')  || name.includes('mkv'))  return 'mkv';
+  if (name.includes('.avi')  || name.includes('avi'))  return 'mkv'; // treat avi as mkv (needs RD)
+  return 'mkv'; // default to mkv since most torrents are MKV
+}
+
+/* Parse quality from stream name */
+function getQualityLabel(stream) {
+  const name = stream.name || stream.title || '';
+  const match = name.match(/4K|2160p|1080p|720p|480p|360p/i);
+  return match ? match[0].toUpperCase() : '';
+}
+
+/* Quality rank for sorting (higher = better) */
+function getQualityRank(stream) {
+  const q = getQualityLabel(stream);
+  const ranks = { '4K': 5, '2160P': 5, '1080P': 4, '720P': 3, '480P': 2, '360P': 1 };
+  return ranks[q] || 2;
+}
+
+/* Get streamable URL from stream object */
+function getStreamUrl(stream) {
+  if (stream.url) return stream.url;
+  if (stream.infoHash) return `magnet:?xt=urn:btih:${stream.infoHash}`;
+  return null;
+}
+
+/* Fetch best format badge for a movie card (lightweight — only checks) */
 async function fetchBestFormat(imdbId) {
   if (!imdbId) return;
   try {
-    const url  = `${TORRENTIO_BASE}/stream/movie/${imdbId}.json`;
-    const res  = await fetch(url);
-    const data = await res.json();
+    // Just check Torrentio for the badge — fast, lightweight
+    const url    = `${TORRENTIO_BASE}/stream/movie/${imdbId}.json`;
+    const res    = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    const data   = await res.json();
     const streams = data.streams || [];
 
-    // Find the best format from available streams
     let fmt = 'none';
     if (streams.length > 0) {
-      const hasMp4  = streams.some(s => getMagnetFmt(s) === 'mp4');
-      const hasWebm = streams.some(s => getMagnetFmt(s) === 'webm');
-      const hasMkv  = streams.some(s => getMagnetFmt(s) === 'mkv');
-      fmt = hasMp4 ? 'mp4' : hasWebm ? 'webm' : hasMkv ? 'mkv' : 'other';
+      const has1080 = streams.some(s => getQualityLabel(s) === '1080P');
+      const has4k   = streams.some(s => getQualityLabel(s) === '4K');
+      fmt = has4k ? '4k' : has1080 ? '1080p' : 'mkv';
     }
 
-    streamCache[imdbId] = streams;
+    streamCache[imdbId] = streams.map(s => ({ ...s, _source: 'torrentio' }));
 
     const badge = document.getElementById('fmt_' + imdbId);
     if (badge) {
-      badge.textContent  = fmt === 'none' ? 'N/A' : fmt.toUpperCase();
-      badge.className    = 'format-badge ' + (fmt === 'none' ? 'none' : fmt);
+      if (fmt === 'none') {
+        badge.textContent = 'N/A'; badge.className = 'format-badge none';
+      } else if (fmt === '4k') {
+        badge.textContent = '4K'; badge.className = 'format-badge mp4';
+      } else if (fmt === '1080p') {
+        badge.textContent = 'HD'; badge.className = 'format-badge mp4';
+      } else {
+        badge.textContent = 'SD'; badge.className = 'format-badge mkv';
+      }
     }
   } catch (e) {
     const badge = document.getElementById('fmt_' + imdbId);
     if (badge) { badge.textContent = '?'; badge.className = 'format-badge none'; }
   }
-}
-
-function getMagnetFmt(stream) {
-  const name = (stream.name || stream.title || '').toLowerCase();
-  if (name.includes('.mp4') || name.includes('mp4')) return 'mp4';
-  if (name.includes('.webm') || name.includes('webm')) return 'webm';
-  if (name.includes('.mkv') || name.includes('mkv')) return 'mkv';
-  return 'other';
-}
-
-function getQualityLabel(stream) {
-  const name = (stream.name || stream.title || '');
-  const match = name.match(/4K|2160p|1080p|720p|480p|360p/i);
-  return match ? match[0] : '';
 }
 
 /* ══════════════════════════════════════════════
@@ -563,55 +646,57 @@ function getQualityLabel(stream) {
 async function openStreamPicker(movie) {
   selectedMovie = movie;
   document.getElementById('streamModalTitle').textContent = movie.name || movie.title;
-  document.getElementById('streamModalSub').textContent = 'Fetching available streams…';
-  streamList.innerHTML = `<div style="color:var(--muted);font-size:0.85rem;padding:1rem 0;text-align:center;">Loading streams…</div>`;
+  document.getElementById('streamModalSub').textContent = '🔍 Searching Torrentio, Comet & MediaFusion…';
+  streamList.innerHTML = `
+    <div style="color:var(--muted);font-size:0.85rem;padding:2rem 0;text-align:center;">
+      <div style="margin-bottom:0.5rem;font-size:1.5rem">⏳</div>
+      Searching 3 sources in parallel…
+    </div>`;
   streamModal.classList.add('open');
 
   try {
-    let streams = streamCache[movie.id];
-    if (!streams) {
-      const url  = `${TORRENTIO_BASE}/stream/movie/${movie.id}.json`;
-      const res  = await fetch(url);
-      const data = await res.json();
-      streams    = data.streams || [];
-      streamCache[movie.id] = streams;
-    }
+    const streams = await fetchAllStreams(movie.id);
 
     if (streams.length === 0) {
-      streamList.innerHTML = `<div class="status-message">No streams found for this movie.</div>`;
-      document.getElementById('streamModalSub').textContent = 'No streams available.';
+      streamList.innerHTML = `
+        <div class="status-message">
+          No streams found across all sources.<br>
+          <span style="font-size:0.8rem;color:var(--muted2)">Try a more popular movie or check back later.</span>
+        </div>`;
+      document.getElementById('streamModalSub').textContent = 'No streams found.';
       return;
     }
 
+    // Count by source for subtitle
+    const bySource = {};
+    streams.forEach(s => { bySource[s._source] = (bySource[s._source] || 0) + 1; });
+    const sourceSummary = Object.entries(bySource)
+      .map(([k, v]) => `${SOURCE_LABELS[k]?.label || k}: ${v}`)
+      .join(', ');
+
     document.getElementById('streamModalSub').textContent =
-      `${streams.length} stream${streams.length !== 1 ? 's' : ''} found. Click any stream — Real-Debrid will resolve it to a direct link instantly.`;
+      `${streams.length} streams found (${sourceSummary}) — sorted by quality`;
 
     streamList.innerHTML = '';
-    // Sort: mp4 first, then webm, then mkv, then other
+
+    // Sort by quality rank descending, then by seeders
     const sorted = [...streams].sort((a, b) => {
-      const order = { mp4: 0, webm: 1, mkv: 2, other: 3 };
-      return (order[getMagnetFmt(a)] || 3) - (order[getMagnetFmt(b)] || 3);
+      const qDiff = getQualityRank(b) - getQualityRank(a);
+      if (qDiff !== 0) return qDiff;
+      return (b.seeders || 0) - (a.seeders || 0);
     });
 
-    sorted.slice(0, 20).forEach(stream => {
+    sorted.slice(0, 30).forEach(stream => {
       const fmt      = getMagnetFmt(stream);
       const quality  = getQualityLabel(stream);
       const name     = stream.name || stream.title || 'Unknown source';
-      const seeders  = stream.seeders ? `${stream.seeders} seeders` : '';
-      const size     = stream.size ? formatBytes(stream.size) : '';
-      const meta     = [seeders, size].filter(Boolean).join(' · ');
-
-      // Get the actual streamable URL
-      // Torrentio free returns either a direct URL or a magnet link
-      const streamUrl = stream.url || stream.infoHash
-        ? (stream.url || `magnet:?xt=urn:btih:${stream.infoHash}`)
-        : null;
+      const seeders  = stream.seeders ? `👥 ${stream.seeders}` : '';
+      const size     = stream.size ? `💾 ${formatBytes(stream.size)}` : '';
+      const source   = SOURCE_LABELS[stream._source] || { label: stream._source, color: '#888' };
+      const meta     = [seeders, size].filter(Boolean).join('  ');
+      const streamUrl = getStreamUrl(stream);
 
       if (!streamUrl) return;
-
-      const isMagnetLink = !stream.url && stream.infoHash;
-      const playLabel    = '▶ Play';
-      const metaNote     = meta;
 
       const item = document.createElement('div');
       item.className = 'stream-item';
@@ -619,10 +704,15 @@ async function openStreamPicker(movie) {
         <span class="stream-fmt ${fmt}">${fmt.toUpperCase()}</span>
         <div class="stream-info">
           <div class="stream-name">${escapeHTML(name)}</div>
-          ${metaNote ? `<div class="stream-meta">${escapeHTML(metaNote)}</div>` : ''}
+          <div class="stream-meta">
+            ${meta ? `<span>${escapeHTML(meta)}</span>` : ''}
+            <span style="color:${source.color};font-weight:600;font-size:0.68rem;margin-left:${meta ? '0.5rem' : '0'}">
+              ${escapeHTML(source.label)}
+            </span>
+          </div>
         </div>
         ${quality ? `<span class="stream-quality">${quality}</span>` : ''}
-        <button class="stream-play-btn" data-loading="false">${playLabel}</button>
+        <button class="stream-play-btn" data-loading="false">▶ Play</button>
       `;
 
       const playBtn = item.querySelector('.stream-play-btn');
@@ -648,7 +738,6 @@ async function openStreamPicker(movie) {
 
       playBtn.addEventListener('click', handleStreamClick);
       item.addEventListener('click', (e) => { if (e.target !== playBtn) handleStreamClick(e); });
-
       streamList.appendChild(item);
     });
 
@@ -667,6 +756,7 @@ function showStreamError(msg) {
   el.textContent = '⚠️ ' + msg;
   streamList.insertBefore(el, streamList.firstChild);
 }
+
 
 document.getElementById('streamModalClose').addEventListener('click', () => streamModal.classList.remove('open'));
 streamModal.addEventListener('click', e => { if (e.target === streamModal) streamModal.classList.remove('open'); });
