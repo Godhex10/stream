@@ -738,18 +738,7 @@
       border-radius: 16px 0 0 16px;
       height: auto;
     }
-    .chat-sidebar.open,
-    .chat-sidebar.mobile-open { right: 0; }
-
-    /* Dark backdrop behind the chat drawer on mobile */
-    .chat-backdrop {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.5);
-      z-index: 149;
-    }
-    .chat-backdrop.visible { display: block; }
+    .chat-sidebar.open { right: 0; }
     .video-col { flex: 1; height: calc(100vh - var(--topbar-h)); }
     .mobile-chat-bubble {
       display: flex;
@@ -894,7 +883,6 @@
     </div>
   </div>
 
-  <div class="chat-backdrop" id="chatBackdrop"></div>
   <div class="chat-sidebar" id="chatSidebar">
     <div class="chat-header">
       <div class="chat-tabs" role="tablist">
@@ -1506,28 +1494,11 @@ document.querySelectorAll('.chat-tab').forEach(tab => {
 ══════════════════════════════════════════════ */
 const mobileChatBubble = document.getElementById('mobileChatBubble');
 const chatSidebar      = document.getElementById('chatSidebar');
-const chatBackdrop     = document.getElementById('chatBackdrop');
-
-function openMobileChat() {
-  chatSidebar.classList.add('mobile-open');
-  if (chatBackdrop) chatBackdrop.classList.add('visible');
-  clearUnreadBadge();
-}
-
-function closeMobileChat() {
-  chatSidebar.classList.remove('mobile-open');
-  if (chatBackdrop) chatBackdrop.classList.remove('visible');
-}
-
 if (mobileChatBubble && chatSidebar) {
   mobileChatBubble.addEventListener('click', () => {
-    const isOpen = chatSidebar.classList.contains('mobile-open');
-    isOpen ? closeMobileChat() : openMobileChat();
+    chatSidebar.classList.toggle('mobile-open');
+    clearUnreadBadge();
   });
-}
-
-if (chatBackdrop) {
-  chatBackdrop.addEventListener('click', closeMobileChat);
 }
 
 /* ══════════════════════════════════════════════
