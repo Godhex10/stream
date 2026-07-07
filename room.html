@@ -8,7 +8,6 @@
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.0.1/css/all.min.css" integrity="sha512-2SwdPD6INVrV/lHTZbO2nodKhrnDdJK9/kg2XD1r9uGqPo1cUbujc+IYdlYdEErWNu69gVcYgdxlmVmzTWnetw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
 <script src="https://cdn.ably.com/lib/ably.min-2.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@webtor/embed-sdk-js/dist/index.min.js" charset="utf-8" async></script>
 
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1189,9 +1188,9 @@ function setupVideoSource(url) {
   urlOverlay.style.display = 'none';
   videoLoaded = true;
   video.load();
-  // Webtor streams need 20-40s to start buffering — warn the user
-  if (url.includes('webtor.io')) {
-    showToast('⏳ Webtor is buffering your stream — may take 20-40s to start');
+  // Real-Debrid direct links are served over HTTPS and start almost instantly
+  if (url.includes('real-debrid.com') || url.includes('rdb.so')) {
+    showToast('🎬 Real-Debrid stream loaded — press play!');
   }
 }
 

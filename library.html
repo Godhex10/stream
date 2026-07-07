@@ -584,7 +584,7 @@ async function openStreamPicker(movie) {
     }
 
     document.getElementById('streamModalSub').textContent =
-      `${streams.length} stream${streams.length !== 1 ? 's' : ''} found. All formats work — magnet links route through Webtor.io automatically.`;
+      `${streams.length} stream${streams.length !== 1 ? 's' : ''} found. Click any stream — Real-Debrid will resolve it to a direct link instantly.`;
 
     streamList.innerHTML = '';
     // Sort: mp4 first, then webm, then mkv, then other
@@ -610,8 +610,8 @@ async function openStreamPicker(movie) {
       if (!streamUrl) return;
 
       const isMagnetLink = !stream.url && stream.infoHash;
-      const playLabel    = isMagnetLink ? '▶ Via Webtor' : '▶ Play';
-      const metaNote     = isMagnetLink ? (meta ? meta + ' · via Webtor.io' : 'via Webtor.io') : meta;
+      const playLabel    = '▶ Play';
+      const metaNote     = meta;
 
       const item = document.createElement('div');
       item.className = 'stream-item';
@@ -622,19 +622,32 @@ async function openStreamPicker(movie) {
           ${metaNote ? `<div class="stream-meta">${escapeHTML(metaNote)}</div>` : ''}
         </div>
         ${quality ? `<span class="stream-quality">${quality}</span>` : ''}
-        <button class="stream-play-btn">${playLabel}</button>
+        <button class="stream-play-btn" data-loading="false">${playLabel}</button>
       `;
 
-      item.querySelector('.stream-play-btn').addEventListener('click', (e) => {
-        e.stopPropagation();
-        streamModal.classList.remove('open');
-        launchRoom(streamUrl, movie.name || movie.title);
-      });
+      const playBtn = item.querySelector('.stream-play-btn');
 
-      item.addEventListener('click', () => {
+      async function handleStreamClick(e) {
+        e.stopPropagation();
+        if (playBtn.dataset.loading === 'true') return;
+        playBtn.dataset.loading = 'true';
+        playBtn.textContent = '⏳ Resolving…';
         streamModal.classList.remove('open');
-        launchRoom(streamUrl, movie.name || movie.title);
-      });
+        try {
+          const finalUrl = await resolveStreamUrl(streamUrl);
+          if (!finalUrl) throw new Error('No URL returned');
+          launchRoom(finalUrl, movie.name || movie.title);
+        } catch(err) {
+          console.error('Stream resolve failed:', err);
+          streamModal.classList.add('open');
+          playBtn.textContent = '❌ Failed — retry';
+          playBtn.dataset.loading = 'false';
+          showStreamError(err.message);
+        }
+      }
+
+      playBtn.addEventListener('click', handleStreamClick);
+      item.addEventListener('click', (e) => { if (e.target !== playBtn) handleStreamClick(e); });
 
       streamList.appendChild(item);
     });
@@ -645,45 +658,147 @@ async function openStreamPicker(movie) {
   }
 }
 
+function showStreamError(msg) {
+  const existing = document.getElementById('streamErrorMsg');
+  if (existing) existing.remove();
+  const el = document.createElement('div');
+  el.id = 'streamErrorMsg';
+  el.style.cssText = 'color:#ff6b6b;font-size:0.82rem;padding:0.6rem 0;text-align:center;';
+  el.textContent = '⚠️ ' + msg;
+  streamList.insertBefore(el, streamList.firstChild);
+}
+
 document.getElementById('streamModalClose').addEventListener('click', () => streamModal.classList.remove('open'));
 streamModal.addEventListener('click', e => { if (e.target === streamModal) streamModal.classList.remove('open'); });
 
 /* ══════════════════════════════════════════════
-    WEBTOR — convert magnet/infoHash to browser-playable URL
-    Webtor.io handles the torrent server-side and returns
-    a streamable HTTP URL the <video> tag can actually play.
+    REAL-DEBRID — convert magnet to direct stream URL
+    Real-Debrid caches torrents on their servers and
+    returns a direct HTTPS link instantly for popular content.
+    API docs: https://api.real-debrid.com
 ══════════════════════════════════════════════ */
-function magnetToWebtor(magnetOrInfoHash) {
-  // Webtor embed API: pass the magnet link as a parameter
-  // It transcodes MKV→browser-friendly format on their servers
-  const encoded = encodeURIComponent(magnetOrInfoHash);
-  return `https://webtor.io/api/stream?magnet=${encoded}`;
+const RD_KEY = 'AZIOEBYE3PEL4XQF3JIE7NQFSOSINHN3KYCCGIRUQFYOTSOPS3SQ';
+const RD_BASE = 'https://api.real-debrid.com/rest/1.0';
+
+async function magnetToRealDebrid(magnetLink) {
+  // Step 1 — Add magnet to Real-Debrid
+  const addRes = await fetch(`${RD_BASE}/torrents/addMagnet`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${RD_KEY}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: `magnet=${encodeURIComponent(magnetLink)}`
+  });
+
+  if (!addRes.ok) {
+    const err = await addRes.json().catch(() => ({}));
+    throw new Error(`RD addMagnet failed: ${err.error || addRes.status}`);
+  }
+
+  const { id } = await addRes.json();
+  if (!id) throw new Error('Real-Debrid returned no torrent ID');
+
+  // Step 2 — Select all files for download
+  await fetch(`${RD_BASE}/torrents/selectFiles/${id}`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${RD_KEY}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: 'files=all'
+  });
+
+  // Step 3 — Poll torrent info until links are ready (max 30s)
+  let links = [];
+  for (let i = 0; i < 30; i++) {
+    await sleep(1000);
+    const infoRes = await fetch(`${RD_BASE}/torrents/info/${id}`, {
+      headers: { 'Authorization': `Bearer ${RD_KEY}` }
+    });
+    const info = await infoRes.json();
+    console.log(`[RD] Status: ${info.status} (${i+1}s)`);
+    if (info.links && info.links.length > 0) {
+      links = info.links;
+      break;
+    }
+    if (info.status === 'error' || info.status === 'dead' || info.status === 'magnet_error') {
+      throw new Error(`Real-Debrid torrent failed: ${info.status}`);
+    }
+  }
+
+  if (links.length === 0) throw new Error('Real-Debrid timed out — no links after 30s');
+
+  // Step 4 — Unrestrict the first link to get the final direct URL
+  const unRes = await fetch(`${RD_BASE}/unrestrict/link`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${RD_KEY}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: `link=${encodeURIComponent(links[0])}`
+  });
+
+  if (!unRes.ok) {
+    const err = await unRes.json().catch(() => ({}));
+    throw new Error(`RD unrestrict failed: ${err.error || unRes.status}`);
+  }
+
+  const { download } = await unRes.json();
+  if (!download) throw new Error('Real-Debrid returned no download URL');
+
+  console.log('[RD] ✅ Direct stream URL ready:', download);
+  return download;
 }
 
 function isMagnet(url) {
   return url && (url.startsWith('magnet:') || url.startsWith('magnet%3A'));
 }
 
-function resolveStreamUrl(rawUrl) {
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function resolveStreamUrl(rawUrl) {
   if (!rawUrl) return null;
   if (isMagnet(rawUrl)) {
-    return magnetToWebtor(rawUrl);
+    console.log('[RD] Resolving magnet via Real-Debrid…');
+    return await magnetToRealDebrid(rawUrl);
   }
-  return rawUrl; // already a direct HTTP URL, use as-is
+  // Already a direct HTTP URL — unrestrict it via RD anyway in case it's a hoster link
+  if (rawUrl.startsWith('http')) {
+    try {
+      const unRes = await fetch(`${RD_BASE}/unrestrict/link`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${RD_KEY}`,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: `link=${encodeURIComponent(rawUrl)}`
+      });
+      if (unRes.ok) {
+        const { download } = await unRes.json();
+        if (download) return download;
+      }
+    } catch(e) {
+      console.warn('[RD] Unrestrict failed for direct URL, using as-is:', e);
+    }
+    return rawUrl;
+  }
+  return rawUrl;
 }
 
 /* ══════════════════════════════════════════════
     LAUNCH ROOM
 ══════════════════════════════════════════════ */
 function launchRoom(streamUrl, title) {
-  const finalUrl = resolveStreamUrl(streamUrl);
-  if (!finalUrl) {
+  if (!streamUrl) {
     alert('Could not resolve a playable URL for this stream.');
     return;
   }
   const roomId = 'room_' + Math.random().toString(36).slice(2, 9);
   const url    = `room.html?room=${encodeURIComponent(roomId)}`
-               + `&stream=${encodeURIComponent(finalUrl)}`
+               + `&stream=${encodeURIComponent(streamUrl)}`
                + `&title=${encodeURIComponent(title)}`;
   window.location.href = url;
 }
