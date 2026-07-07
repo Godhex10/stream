@@ -972,7 +972,6 @@ let isSyncingFromRemote = false;
 let videoLoaded         = false;
 let unreadCount         = 0;
 let pendingRemotePlay   = null;
-let hasSynced           = false; // true once we've received a state_response from the room
 
 // Viewers presence map: clientId -> { name, color }
 const viewers = new Map();
@@ -1052,14 +1051,8 @@ function initAbly() {
         viewers.set(p.clientId, { name: p.name, color: p.color });
         addSystemMsg(p.name + ' joined the party 👋');
         updateViewersUI();
-
-        // Only the host (first viewer in the room) responds with state.
-        // This prevents every client from flooding the joiner with responses.
-        const myClientId = ablyClient.auth.clientId || myName;
-        const isHost = Array.from(viewers.keys())[0] === myClientId;
-
-        if (videoLoaded && isHost && p.clientId !== myClientId) {
-          // Send current state only to the new joiner
+        // If we have a video loaded, send state to new joiner
+        if (videoLoaded) {
           channel.publish('video_sync', {
             type: 'state_response',
             src: video.src,
@@ -1216,8 +1209,10 @@ function broadcastSync(payload) {
     SYNC RECEIVER
 ══════════════════════════════════════════════ */
 function handleRemoteSync(payload) {
-  // state_response: ignore if we already synced to the room once
-  if (payload.type === 'state_response' && hasSynced) return;
+  // state_response is only relevant to the late joiner
+  if (payload.type === 'state_response') {
+    if (videoLoaded) return; // we already have a video, ignore
+  }
 
   isSyncingFromRemote = true;
 
@@ -1252,30 +1247,26 @@ function handleRemoteSync(payload) {
     setTimeout(() => { isSyncingFromRemote = false; }, 200);
 
   } else if (payload.type === 'state_response') {
-    hasSynced = true;
-
-    // Load the video source if we don't have it yet
-    if (!videoLoaded || video.src !== payload.src) {
-      setupVideoSource(payload.src);
-    }
+    setupVideoSource(payload.src);
     if (payload.title) document.getElementById('roomNameDisplay').textContent = payload.title;
-
-    // Always show "Sync to Room" button so the joiner consciously
-    // chooses when to jump to the current timestamp.
-    // This prevents the jarring experience of the video jumping
-    // automatically while the joiner is still reading the chat.
-    pendingRemotePlay = payload.time;
-    document.getElementById('syncOverlay').style.display = 'flex';
-
-    // Update overlay text to show how far into the movie they'll be syncing to
-    const overlaySmall = document.querySelector('#syncOverlay small');
-    if (overlaySmall) {
-      overlaySmall.textContent = payload.paused
-        ? `Paused at ${fmtTime(payload.time)} — click to join`
-        : `Currently at ${fmtTime(payload.time)} — click to sync`;
-    }
-
-    isSyncingFromRemote = false;
+    addSystemMsg('Syncing you to the current video 🎬');
+    setTimeout(() => {
+      video.currentTime = payload.time;
+      if (!payload.paused) {
+        const wasMuted = video.muted;
+        video.muted = true;
+        video.play()
+          .then(() => { setTimeout(() => { video.muted = wasMuted; }, 300); })
+          .catch(() => {
+            video.muted = wasMuted;
+            pendingRemotePlay = payload.time;
+            document.getElementById('syncOverlay').style.display = 'flex';
+          })
+          .finally(() => { isSyncingFromRemote = false; });
+      } else {
+        isSyncingFromRemote = false;
+      }
+    }, 600);
 
   } else {
     isSyncingFromRemote = false;
@@ -1285,23 +1276,14 @@ function handleRemoteSync(payload) {
 function dismissSyncOverlay() {
   document.getElementById('syncOverlay').style.display = 'none';
   isSyncingFromRemote = true;
-  hasSynced = true;
-
   if (pendingRemotePlay !== null) {
     video.currentTime = pendingRemotePlay;
     pendingRemotePlay = null;
   }
-
   video.muted = false;
-  video.play()
-    .catch(() => {
-      // Autoplay still blocked — that's fine, user can press play manually
-    })
-    .finally(() => {
-      setTimeout(() => { isSyncingFromRemote = false; }, 200);
-    });
-
-  addSystemMsg('You synced to the room ✅');
+  video.play().finally(() => {
+    setTimeout(() => { isSyncingFromRemote = false; }, 200);
+  });
 }
 
 /* ══════════════════════════════════════════════
@@ -1565,47 +1547,27 @@ window.addEventListener('DOMContentLoaded', () => {
     const videoSourceInput = document.getElementById('videoUrlInput');
     if (videoSourceInput) videoSourceInput.value = directStreamUrl;
 
-    // Load the video source so it's ready to play
+    // Load locally immediately so the host doesn't wait
     setupVideoSource(directStreamUrl);
+    addSystemMsg('Movie loaded from library 🎬');
 
-    // Wait for Ably to connect, then check if we're the first person
-    // in the room (host) or joining an existing session (late joiner).
+    // Wait for Ably to be ready before broadcasting to the room
     let attempts = 0;
-    const tryInit = () => {
+    const tryBroadcast = () => {
       attempts++;
-      if (!isChannelReady) {
-        if (attempts < 50) setTimeout(tryInit, 200);
-        else showToast('⚠️ Could not connect — check connection');
-        return;
-      }
-
-      // Check how many viewers are already in the room
-      const existingViewers = viewers.size;
-
-      if (existingViewers <= 1) {
-        // We're the host — announce the movie and start from beginning
-        hasSynced = true;
-        addSystemMsg('Movie loaded from library 🎬');
+      if (isChannelReady) {
         broadcastSync({
           type: 'load',
           src: directStreamUrl,
           title: directTitle || document.getElementById('roomNameDisplay').textContent
         });
+      } else if (attempts < 50) {
+        setTimeout(tryBroadcast, 200);
       } else {
-        // We're a late joiner — pause the video at 0, show sync overlay,
-        // and wait for the host to send us the current timestamp
-        video.pause();
-        hasSynced = false;
-        addSystemMsg('Joining the room — waiting for sync… 🔄');
-        // Show sync overlay immediately with a "waiting" state
-        const overlaySmall = document.querySelector('#syncOverlay small');
-        if (overlaySmall) overlaySmall.textContent = 'Waiting for room state…';
-        document.getElementById('syncOverlay').style.display = 'flex';
-        // The host will see our presence_update join event and
-        // send a state_response which handleRemoteSync will catch
+        showToast('⚠️ Could not announce movie — check connection');
       }
     };
-    setTimeout(tryInit, 500);
+    setTimeout(tryBroadcast, 300);
   }
 });
 </script>
