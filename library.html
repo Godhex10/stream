@@ -677,74 +677,53 @@ streamModal.addEventListener('click', e => { if (e.target === streamModal) strea
     returns a direct HTTPS link instantly for popular content.
     API docs: https://api.real-debrid.com
 ══════════════════════════════════════════════ */
-const RD_KEY = 'AZIOEBYE3PEL4XQF3JIE7NQFSOSINHN3KYCCGIRUQFYOTSOPS3SQ';
-const RD_BASE = 'https://api.real-debrid.com/rest/1.0';
+const RD_KEY  = 'AZIOEBYE3PEL4XQF3JIE7NQFSOSINHN3KYCCGIRUQFYOTSOPS3SQ';
+const RD_PROXY = '/api/realdebrid'; // Vercel serverless proxy — avoids CORS
+
+async function rdProxy(body) {
+  const res = await fetch(RD_PROXY, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...body, token: RD_KEY })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`RD proxy error: ${err.error || res.status}`);
+  }
+  return res.json();
+}
 
 async function magnetToRealDebrid(magnetLink) {
-  // Step 1 — Add magnet to Real-Debrid
-  const addRes = await fetch(`${RD_BASE}/torrents/addMagnet`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${RD_KEY}`,
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body: `magnet=${encodeURIComponent(magnetLink)}`
-  });
-
-  if (!addRes.ok) {
-    const err = await addRes.json().catch(() => ({}));
-    throw new Error(`RD addMagnet failed: ${err.error || addRes.status}`);
-  }
-
-  const { id } = await addRes.json();
+  // Step 1 — Add magnet
+  console.log('[RD] Step 1: Adding magnet…');
+  const { id } = await rdProxy({ action: 'addMagnet', magnet: magnetLink });
   if (!id) throw new Error('Real-Debrid returned no torrent ID');
 
-  // Step 2 — Select all files for download
-  await fetch(`${RD_BASE}/torrents/selectFiles/${id}`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${RD_KEY}`,
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body: 'files=all'
-  });
+  // Step 2 — Select all files
+  console.log('[RD] Step 2: Selecting files…');
+  await rdProxy({ action: 'selectFiles', id });
 
-  // Step 3 — Poll torrent info until links are ready (max 30s)
+  // Step 3 — Poll until links are ready (max 30s)
+  console.log('[RD] Step 3: Waiting for links…');
   let links = [];
   for (let i = 0; i < 30; i++) {
     await sleep(1000);
-    const infoRes = await fetch(`${RD_BASE}/torrents/info/${id}`, {
-      headers: { 'Authorization': `Bearer ${RD_KEY}` }
-    });
-    const info = await infoRes.json();
-    console.log(`[RD] Status: ${info.status} (${i+1}s)`);
+    const info = await rdProxy({ action: 'torrentInfo', id });
+    console.log(`[RD] Status: ${info.status} (${i + 1}s)`);
     if (info.links && info.links.length > 0) {
       links = info.links;
       break;
     }
-    if (info.status === 'error' || info.status === 'dead' || info.status === 'magnet_error') {
+    if (['error', 'dead', 'magnet_error'].includes(info.status)) {
       throw new Error(`Real-Debrid torrent failed: ${info.status}`);
     }
   }
 
   if (links.length === 0) throw new Error('Real-Debrid timed out — no links after 30s');
 
-  // Step 4 — Unrestrict the first link to get the final direct URL
-  const unRes = await fetch(`${RD_BASE}/unrestrict/link`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${RD_KEY}`,
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body: `link=${encodeURIComponent(links[0])}`
-  });
-
-  if (!unRes.ok) {
-    const err = await unRes.json().catch(() => ({}));
-    throw new Error(`RD unrestrict failed: ${err.error || unRes.status}`);
-  }
-
-  const { download } = await unRes.json();
+  // Step 4 — Unrestrict to get final direct URL
+  console.log('[RD] Step 4: Unrestricting link…');
+  const { download } = await rdProxy({ action: 'unrestrict', link: links[0] });
   if (!download) throw new Error('Real-Debrid returned no download URL');
 
   console.log('[RD] ✅ Direct stream URL ready:', download);
@@ -762,24 +741,14 @@ function sleep(ms) {
 async function resolveStreamUrl(rawUrl) {
   if (!rawUrl) return null;
   if (isMagnet(rawUrl)) {
-    console.log('[RD] Resolving magnet via Real-Debrid…');
+    console.log('[RD] Resolving magnet via proxy…');
     return await magnetToRealDebrid(rawUrl);
   }
-  // Already a direct HTTP URL — unrestrict it via RD anyway in case it's a hoster link
+  // Direct HTTP URL — try to unrestrict via RD for better speed
   if (rawUrl.startsWith('http')) {
     try {
-      const unRes = await fetch(`${RD_BASE}/unrestrict/link`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${RD_KEY}`,
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: `link=${encodeURIComponent(rawUrl)}`
-      });
-      if (unRes.ok) {
-        const { download } = await unRes.json();
-        if (download) return download;
-      }
+      const data = await rdProxy({ action: 'unrestrict', link: rawUrl });
+      if (data.download) return data.download;
     } catch(e) {
       console.warn('[RD] Unrestrict failed for direct URL, using as-is:', e);
     }
