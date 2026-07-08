@@ -513,6 +513,7 @@ function renderLocalMovies() {
 ══════════════════════════════════════════════ */
 const TORRENTIO_BASE  = 'https://torrentio.strem.fun';
 const AIOSTREAMS_BASE = 'https://aiostreams.elfhosted.com/stremio/e5e59244-2ee5-411a-ad13-c7f1d9d9e2b9/eyJpIjoiWFVxdk1ZQnRsQVFWQXdlbGdnelMrZz09IiwiZSI6Ii9wMkZiRGVkaWhSVENTaFY3SkFJY2Z5LzZ4V1orNlN4alFnM2hMajVZZlk9IiwidCI6ImEifQ';
+const NUVIO_BASE      = 'https://nuviostreamsaddon.up.railway.app';
 
 // Cache per imdbId — stores merged results from all sources
 const streamCache = {};
@@ -520,7 +521,8 @@ const streamCache = {};
 // Source labels so user knows where each result came from
 const SOURCE_LABELS = {
   torrentio:  { label: 'Torrentio',  color: '#f4b400' },
-  aiostreams: { label: 'AIOStreams', color: '#9c27b0' }
+  aiostreams: { label: 'AIOStreams', color: '#9c27b0' },
+  nuvio:      { label: 'Nuvio ✅',   color: '#22c55e' } // green = no RD needed
 };
 
 /* Fetch streams from a single source safely — never throws */
@@ -541,29 +543,30 @@ async function fetchFromSource(url, sourceName) {
   }
 }
 
-/* Fetch from Torrentio + AIOStreams in parallel */
+/* Fetch from Torrentio + AIOStreams + Nuvio in parallel */
 async function fetchAllStreams(imdbId) {
   if (streamCache[imdbId]) return streamCache[imdbId];
 
-  console.log(`[Streams] Fetching from Torrentio + AIOStreams for ${imdbId}…`);
+  console.log(`[Streams] Fetching from all sources for ${imdbId}…`);
 
-  const [torrentioStreams, aiostreamsStreams] = await Promise.all([
+  const [torrentioStreams, aiostreamsStreams, nuvioStreams] = await Promise.all([
     fetchFromSource(`${TORRENTIO_BASE}/stream/movie/${imdbId}.json`, 'torrentio'),
-    fetchFromSource(`${AIOSTREAMS_BASE}/stream/movie/${imdbId}.json`, 'aiostreams')
+    fetchFromSource(`${AIOSTREAMS_BASE}/stream/movie/${imdbId}.json`, 'aiostreams'),
+    fetchFromSource(`${NUVIO_BASE}/stream/movie/${imdbId}.json`, 'nuvio')
   ]);
 
-  // Merge and deduplicate by infoHash
+  // Merge and deduplicate — Nuvio first (direct HTTP, no RD needed)
   const seen   = new Set();
   const merged = [];
 
-  for (const stream of [...torrentioStreams, ...aiostreamsStreams]) {
+  for (const stream of [...nuvioStreams, ...torrentioStreams, ...aiostreamsStreams]) {
     const key = stream.infoHash || stream.url || (stream.name + (stream.title || ''));
     if (!key || seen.has(key)) continue;
     seen.add(key);
     merged.push(stream);
   }
 
-  console.log(`[Streams] Total unique: ${merged.length} (Torrentio: ${torrentioStreams.length}, AIOStreams: ${aiostreamsStreams.length})`);
+  console.log(`[Streams] Total: ${merged.length} (Nuvio: ${nuvioStreams.length}, Torrentio: ${torrentioStreams.length}, AIOStreams: ${aiostreamsStreams.length})`);
 
   streamCache[imdbId] = merged;
   return merged;
@@ -643,11 +646,11 @@ async function fetchBestFormat(imdbId) {
 async function openStreamPicker(movie) {
   selectedMovie = movie;
   document.getElementById('streamModalTitle').textContent = movie.name || movie.title;
-  document.getElementById('streamModalSub').textContent = '🔍 Searching Torrentio + AIOStreams (Comet, Jackettio, Sootio)…';
+  document.getElementById('streamModalSub').textContent = '🔍 Searching Torrentio + AIOStreams + Nuvio in parallel…';
   streamList.innerHTML = `
     <div style="color:var(--muted);font-size:0.85rem;padding:2rem 0;text-align:center;">
       <div style="margin-bottom:0.5rem;font-size:1.5rem">⏳</div>
-      Searching 3 sources in parallel…
+      Searching Torrentio, AIOStreams & Nuvio…
     </div>`;
   streamModal.classList.add('open');
 
@@ -722,21 +725,25 @@ async function openStreamPicker(movie) {
 
         try {
           let finalUrl;
+          const isNuvio = stream._source === 'nuvio';
 
-          if (isMagnet(streamUrl)) {
-            // Build a list of all magnets from all sources for this movie,
-            // starting with the one the user clicked (best quality/preferred),
-            // then falling back to the rest automatically on infringing_file.
+          if (isNuvio && streamUrl && streamUrl.startsWith('http')) {
+            // Nuvio streams are direct HTTP URLs — no Real-Debrid needed at all
+            playBtn.textContent = '⏳ Loading…';
+            console.log('[Nuvio] Direct HTTP stream — bypassing RD');
+            finalUrl = streamUrl;
+
+          } else if (isMagnet(streamUrl)) {
+            // Torrent magnet — use RD with auto-retry across all magnets
             playBtn.textContent = '⏳ Trying streams…';
 
-            // Collect all magnets from the full stream list — sorted the same
-            // way the picker was sorted so the best options are tried first
             const allStreams  = streamCache[movie.id] || [];
             const allMagnets  = allStreams
+              .filter(s => s._source !== 'nuvio') // only magnet-based sources
               .map(s => getStreamUrl(s))
               .filter(u => u && isMagnet(u));
 
-            // Make sure the clicked one is tried first
+            // Clicked stream goes first
             const clickedIdx = allMagnets.indexOf(streamUrl);
             if (clickedIdx > 0) {
               allMagnets.splice(clickedIdx, 1);
@@ -749,7 +756,7 @@ async function openStreamPicker(movie) {
             finalUrl = await resolveWithRetry(allMagnets);
 
           } else {
-            // Direct HTTP URL — unrestrict via RD
+            // Direct HTTP URL from non-Nuvio source — unrestrict via RD
             playBtn.textContent = '⏳ Resolving…';
             finalUrl = await resolveStreamUrl(streamUrl);
           }
@@ -760,10 +767,10 @@ async function openStreamPicker(movie) {
         } catch(err) {
           console.error('Stream resolve failed:', err);
           streamModal.classList.add('open');
-          playBtn.textContent = '❌ All streams failed';
+          playBtn.textContent = '❌ Failed — retry';
           playBtn.dataset.loading = 'false';
           showStreamError(err.exhausted
-            ? `All ${err.tried || 'available'} streams are blocked by Real-Debrid. Try a different movie or check back later.`
+            ? `All ${err.tried || 'available'} torrent streams are blocked. Try a Nuvio ✅ stream instead.`
             : err.message
           );
         }
