@@ -718,18 +718,54 @@ async function openStreamPicker(movie) {
         e.stopPropagation();
         if (playBtn.dataset.loading === 'true') return;
         playBtn.dataset.loading = 'true';
-        playBtn.textContent = '⏳ Resolving…';
         streamModal.classList.remove('open');
+
         try {
-          const finalUrl = await resolveStreamUrl(streamUrl);
-          if (!finalUrl) throw new Error('No URL returned');
+          let finalUrl;
+
+          if (isMagnet(streamUrl)) {
+            // Build a list of all magnets from all sources for this movie,
+            // starting with the one the user clicked (best quality/preferred),
+            // then falling back to the rest automatically on infringing_file.
+            playBtn.textContent = '⏳ Trying streams…';
+
+            // Collect all magnets from the full stream list — sorted the same
+            // way the picker was sorted so the best options are tried first
+            const allStreams  = streamCache[movie.id] || [];
+            const allMagnets  = allStreams
+              .map(s => getStreamUrl(s))
+              .filter(u => u && isMagnet(u));
+
+            // Make sure the clicked one is tried first
+            const clickedIdx = allMagnets.indexOf(streamUrl);
+            if (clickedIdx > 0) {
+              allMagnets.splice(clickedIdx, 1);
+              allMagnets.unshift(streamUrl);
+            } else if (clickedIdx === -1) {
+              allMagnets.unshift(streamUrl);
+            }
+
+            console.log(`[RD] Sending ${allMagnets.length} magnets for auto-retry`);
+            finalUrl = await resolveWithRetry(allMagnets);
+
+          } else {
+            // Direct HTTP URL — unrestrict via RD
+            playBtn.textContent = '⏳ Resolving…';
+            finalUrl = await resolveStreamUrl(streamUrl);
+          }
+
+          if (!finalUrl) throw new Error('No playable URL returned');
           launchRoom(finalUrl, movie.name || movie.title);
+
         } catch(err) {
           console.error('Stream resolve failed:', err);
           streamModal.classList.add('open');
-          playBtn.textContent = '❌ Failed — retry';
+          playBtn.textContent = '❌ All streams failed';
           playBtn.dataset.loading = 'false';
-          showStreamError(err.message);
+          showStreamError(err.exhausted
+            ? `All ${err.tried || 'available'} streams are blocked by Real-Debrid. Try a different movie or check back later.`
+            : err.message
+          );
         }
       }
 
@@ -764,8 +800,8 @@ streamModal.addEventListener('click', e => { if (e.target === streamModal) strea
     returns a direct HTTPS link instantly for popular content.
     API docs: https://api.real-debrid.com
 ══════════════════════════════════════════════ */
-const RD_KEY  = 'AZIOEBYE3PEL4XQF3JIE7NQFSOSINHN3KYCCGIRUQFYOTSOPS3SQ';
-const RD_PROXY = '/api/realdebrid'; // Vercel serverless proxy — avoids CORS
+const RD_KEY   = 'AZIOEBYE3PEL4XQF3JIE7NQFSOSINHN3KYCCGIRUQFYOTSOPS3SQ';
+const RD_PROXY = '/api/realdebrid';
 
 async function rdProxy(body) {
   const res = await fetch(RD_PROXY, {
@@ -773,48 +809,27 @@ async function rdProxy(body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...body, token: RD_KEY })
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(`RD proxy error: ${err.error || res.status}`);
-  }
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `RD proxy error: ${res.status}`);
+  return data;
 }
 
+// Resolve a single magnet — used when user clicks one specific stream
 async function magnetToRealDebrid(magnetLink) {
-  // Step 1 — Add magnet
-  console.log('[RD] Step 1: Adding magnet…');
-  const { id } = await rdProxy({ action: 'addMagnet', magnet: magnetLink });
-  if (!id) throw new Error('Real-Debrid returned no torrent ID');
+  const data = await rdProxy({ action: 'resolveMagnet', magnets: [magnetLink] });
+  if (!data.download) throw new Error('No download URL returned');
+  return data.download;
+}
 
-  // Step 2 — Select all files
-  console.log('[RD] Step 2: Selecting files…');
-  await rdProxy({ action: 'selectFiles', id });
-
-  // Step 3 — Poll until links are ready (max 30s)
-  console.log('[RD] Step 3: Waiting for links…');
-  let links = [];
-  for (let i = 0; i < 30; i++) {
-    await sleep(1000);
-    const info = await rdProxy({ action: 'torrentInfo', id });
-    console.log(`[RD] Status: ${info.status} (${i + 1}s)`);
-    if (info.links && info.links.length > 0) {
-      links = info.links;
-      break;
-    }
-    if (['error', 'dead', 'magnet_error'].includes(info.status)) {
-      throw new Error(`Real-Debrid torrent failed: ${info.status}`);
-    }
-  }
-
-  if (links.length === 0) throw new Error('Real-Debrid timed out — no links after 30s');
-
-  // Step 4 — Unrestrict to get final direct URL
-  console.log('[RD] Step 4: Unrestricting link…');
-  const { download } = await rdProxy({ action: 'unrestrict', link: links[0] });
-  if (!download) throw new Error('Real-Debrid returned no download URL');
-
-  console.log('[RD] ✅ Direct stream URL ready:', download);
-  return download;
+// Resolve using ALL magnets for a movie at once — proxy tries them in order,
+// skipping any flagged as infringing_file automatically
+async function resolveWithRetry(magnetList) {
+  if (!magnetList.length) throw new Error('No magnets to try');
+  console.log(`[RD] Sending ${magnetList.length} magnets to proxy for auto-retry…`);
+  const data = await rdProxy({ action: 'resolveMagnet', magnets: magnetList });
+  if (!data.download) throw new Error(data.error || 'All streams failed');
+  console.log(`[RD] ✅ Resolved on attempt ${(data.magnetIndex || 0) + 1}`);
+  return data.download;
 }
 
 function isMagnet(url) {
@@ -828,16 +843,14 @@ function sleep(ms) {
 async function resolveStreamUrl(rawUrl) {
   if (!rawUrl) return null;
   if (isMagnet(rawUrl)) {
-    console.log('[RD] Resolving magnet via proxy…');
     return await magnetToRealDebrid(rawUrl);
   }
-  // Direct HTTP URL — try to unrestrict via RD for better speed
   if (rawUrl.startsWith('http')) {
     try {
       const data = await rdProxy({ action: 'unrestrict', link: rawUrl });
       if (data.download) return data.download;
     } catch(e) {
-      console.warn('[RD] Unrestrict failed for direct URL, using as-is:', e);
+      console.warn('[RD] Unrestrict failed, using URL as-is:', e.message);
     }
     return rawUrl;
   }
