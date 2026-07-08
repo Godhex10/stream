@@ -507,29 +507,27 @@ function renderLocalMovies() {
 }
 
 /* ══════════════════════════════════════════════
-    STREAM SOURCES — Torrentio + Comet + MediaFusion in parallel
-    All three use the same Stremio addon API format.
-    Results are merged, deduplicated and sorted by quality.
+    STREAM SOURCES — Torrentio + AIOStreams in parallel
+    AIOStreams aggregates Comet + Jackettio + Sootio with
+    Real-Debrid already applied — one URL covers all three.
 ══════════════════════════════════════════════ */
-const TORRENTIO_BASE   = 'https://torrentio.strem.fun';
-const COMET_BASE       = 'https://comet.elfhosted.com';
-const MEDIAFUSION_BASE = 'https://mediafusion.elfhosted.com';
+const TORRENTIO_BASE  = 'https://torrentio.strem.fun';
+const AIOSTREAMS_BASE = 'https://aiostreams.elfhosted.com/stremio/e5e59244-2ee5-411a-ad13-c7f1d9d9e2b9/eyJpIjoiWFVxdk1ZQnRsQVFWQXdlbGdnelMrZz09IiwiZSI6Ii9wMkZiRGVkaWhSVENTaFY3SkFJY2Z5LzZ4V1orNlN4alFnM2hMajVZZlk9IiwidCI6ImEifQ';
 
 // Cache per imdbId — stores merged results from all sources
 const streamCache = {};
 
 // Source labels so user knows where each result came from
 const SOURCE_LABELS = {
-  torrentio:   { label: 'Torrentio',   color: '#f4b400' },
-  comet:       { label: 'Comet',       color: '#00bcd4' },
-  mediafusion: { label: 'MediaFusion', color: '#9c27b0' }
+  torrentio:  { label: 'Torrentio',  color: '#f4b400' },
+  aiostreams: { label: 'AIOStreams', color: '#9c27b0' }
 };
 
 /* Fetch streams from a single source safely — never throws */
 async function fetchFromSource(url, sourceName) {
   try {
     const controller = new AbortController();
-    const timeout    = setTimeout(() => controller.abort(), 8000); // 8s timeout per source
+    const timeout    = setTimeout(() => controller.abort(), 10000); // 10s timeout
     const res  = await fetch(url, { signal: controller.signal });
     clearTimeout(timeout);
     if (!res.ok) return [];
@@ -543,30 +541,29 @@ async function fetchFromSource(url, sourceName) {
   }
 }
 
-/* Fetch from all three sources in parallel */
+/* Fetch from Torrentio + AIOStreams in parallel */
 async function fetchAllStreams(imdbId) {
   if (streamCache[imdbId]) return streamCache[imdbId];
 
-  console.log(`[Streams] Fetching from all sources for ${imdbId}…`);
+  console.log(`[Streams] Fetching from Torrentio + AIOStreams for ${imdbId}…`);
 
-  const [torrentioStreams, cometStreams, mediafusionStreams] = await Promise.all([
+  const [torrentioStreams, aiostreamsStreams] = await Promise.all([
     fetchFromSource(`${TORRENTIO_BASE}/stream/movie/${imdbId}.json`, 'torrentio'),
-    fetchFromSource(`${COMET_BASE}/stream/movie/${imdbId}.json`, 'comet'),
-    fetchFromSource(`${MEDIAFUSION_BASE}/stream/movie/${imdbId}.json`, 'mediafusion')
+    fetchFromSource(`${AIOSTREAMS_BASE}/stream/movie/${imdbId}.json`, 'aiostreams')
   ]);
 
   // Merge and deduplicate by infoHash
   const seen   = new Set();
   const merged = [];
 
-  for (const stream of [...torrentioStreams, ...cometStreams, ...mediafusionStreams]) {
-    const key = stream.infoHash || stream.url || (stream.name + stream.title);
+  for (const stream of [...torrentioStreams, ...aiostreamsStreams]) {
+    const key = stream.infoHash || stream.url || (stream.name + (stream.title || ''));
     if (!key || seen.has(key)) continue;
     seen.add(key);
     merged.push(stream);
   }
 
-  console.log(`[Streams] Total unique: ${merged.length} (Torrentio: ${torrentioStreams.length}, Comet: ${cometStreams.length}, MediaFusion: ${mediafusionStreams.length})`);
+  console.log(`[Streams] Total unique: ${merged.length} (Torrentio: ${torrentioStreams.length}, AIOStreams: ${aiostreamsStreams.length})`);
 
   streamCache[imdbId] = merged;
   return merged;
@@ -646,7 +643,7 @@ async function fetchBestFormat(imdbId) {
 async function openStreamPicker(movie) {
   selectedMovie = movie;
   document.getElementById('streamModalTitle').textContent = movie.name || movie.title;
-  document.getElementById('streamModalSub').textContent = '🔍 Searching Torrentio, Comet & MediaFusion…';
+  document.getElementById('streamModalSub').textContent = '🔍 Searching Torrentio + AIOStreams (Comet, Jackettio, Sootio)…';
   streamList.innerHTML = `
     <div style="color:var(--muted);font-size:0.85rem;padding:2rem 0;text-align:center;">
       <div style="margin-bottom:0.5rem;font-size:1.5rem">⏳</div>
