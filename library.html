@@ -199,6 +199,9 @@
     transition: background 0.15s;
   }
   .stream-play-btn:hover { background: var(--red-dark); }
+  /* Stream item with potential audio issues */
+  .stream-item-warn { border-color: rgba(229,9,20,0.2) !important; }
+  .stream-item-warn:hover { border-color: rgba(229,9,20,0.5) !important; }
   .stream-modal-close {
     background: var(--surface2); border: 1px solid var(--border);
     border-radius: 8px; color: var(--muted); padding: 0.6rem 1rem;
@@ -614,31 +617,70 @@ async function fetchAllStreams(imdbId) {
   return merged;
 }
 
-/* Parse format from stream name */
+/* ── Stream name parsing helpers ── */
+
+/* Parse format from stream name/filename */
 function getMagnetFmt(stream) {
   const name = (stream.name || stream.title || stream.behaviorHints?.filename || '').toLowerCase();
   if (name.includes('.mp4')  || name.includes('mp4'))  return 'mp4';
   if (name.includes('.webm') || name.includes('webm')) return 'webm';
   if (name.includes('.mkv')  || name.includes('mkv'))  return 'mkv';
-  if (name.includes('.avi')  || name.includes('avi'))  return 'mkv'; // treat avi as mkv (needs RD)
-  return 'mkv'; // default to mkv since most torrents are MKV
+  if (name.includes('.avi')  || name.includes('avi'))  return 'mkv';
+  return 'mkv';
 }
 
-/* Parse quality from stream name */
+/* Parse quality */
 function getQualityLabel(stream) {
   const name = stream.name || stream.title || '';
   const match = name.match(/4K|2160p|1080p|720p|480p|360p/i);
   return match ? match[0].toUpperCase() : '';
 }
 
-/* Quality rank for sorting (higher = better) */
+/* Quality rank for sorting */
 function getQualityRank(stream) {
   const q = getQualityLabel(stream);
   const ranks = { '4K': 5, '2160P': 5, '1080P': 4, '720P': 3, '480P': 2, '360P': 1 };
   return ranks[q] || 2;
 }
 
-/* Get streamable URL from stream object */
+/* Parse audio codec from stream name */
+function getAudioInfo(stream) {
+  const name = (stream.name || stream.title || '').toUpperCase();
+  // Detect common audio codecs
+  if (name.includes('TRUEHD') || name.includes('TRUE HD')) return { label: 'TrueHD', ok: true };
+  if (name.includes('ATMOS'))   return { label: 'Atmos',  ok: true };
+  if (name.includes('EAC3') || name.includes('E-AC3') || name.includes('E AC3')) return { label: 'EAC3', ok: true };
+  if (name.includes('DTS-HD') || name.includes('DTSHD'))  return { label: 'DTS-HD', ok: true };
+  if (name.includes('DTS'))   return { label: 'DTS',   ok: true };
+  if (name.includes('AC3') || name.includes('DD5') || name.includes('DOLBY')) return { label: 'AC3', ok: true };
+  if (name.includes('AAC'))   return { label: 'AAC',   ok: true };
+  if (name.includes('MP3'))   return { label: 'MP3',   ok: true };
+  if (name.includes('FLAC'))  return { label: 'FLAC',  ok: true };
+  if (name.includes('OPUS'))  return { label: 'Opus',  ok: true };
+  // Indicators that there might be NO audio
+  if (name.includes('MUTED') || name.includes('NO AUDIO') || name.includes('SILENT')) {
+    return { label: '🔇 No Audio', ok: false };
+  }
+  // CAM rips often have bad or no audio
+  if (name.includes('CAM') || name.includes('CAMRIP') || name.includes('HDCAM')) {
+    return { label: '⚠️ CAM', ok: false };
+  }
+  // No audio info found — unknown, don't warn
+  return { label: '', ok: true };
+}
+
+/* Parse file size from stream (Torrentio puts it in stream.size in bytes) */
+function getSizeInfo(stream) {
+  // Torrentio returns size in bytes in the stream.size field
+  if (stream.size) return formatBytes(stream.size);
+  // Some addons embed size in the title string like "2.1 GB"
+  const name = stream.name || stream.title || '';
+  const match = name.match(/(\d+\.?\d*)\s*(GB|MB)/i);
+  if (match) return `${match[1]} ${match[2].toUpperCase()}`;
+  return '';
+}
+
+/* Get streamable URL */
 function getStreamUrl(stream) {
   if (stream.url) return stream.url;
   if (stream.infoHash) return `magnet:?xt=urn:btih:${stream.infoHash}`;
@@ -737,28 +779,32 @@ function renderStreamItems(streams, movie) {
     });
 
     sorted.slice(0, 30).forEach(stream => {
-      const fmt      = getMagnetFmt(stream);
-      const quality  = getQualityLabel(stream);
-      const name     = stream.name || stream.title || 'Unknown source';
-      const seeders  = stream.seeders ? `👥 ${stream.seeders}` : '';
-      const size     = stream.size ? `💾 ${formatBytes(stream.size)}` : '';
-      const source   = SOURCE_LABELS[stream._source] || { label: stream._source, color: '#888' };
-      const meta     = [seeders, size].filter(Boolean).join('  ');
+      const fmt       = getMagnetFmt(stream);
+      const quality   = getQualityLabel(stream);
+      const audio     = getAudioInfo(stream);
+      const sizeLabel = getSizeInfo(stream);
+      const name      = stream.name || stream.title || 'Unknown source';
+      const seeders   = stream.seeders ? `👥 ${stream.seeders}` : '';
+      const source    = SOURCE_LABELS[stream._source] || { label: stream._source, color: '#888' };
       const streamUrl = getStreamUrl(stream);
 
       if (!streamUrl) return;
 
+      // Build badge row: size + audio + source
+      const badges = [];
+      if (sizeLabel) badges.push(`<span style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:1px 6px;font-size:0.65rem;font-weight:600;color:#ccc;">💾 ${escapeHTML(sizeLabel)}</span>`);
+      if (audio.label) badges.push(`<span style="background:${audio.ok ? 'rgba(34,197,94,0.12)' : 'rgba(229,9,20,0.15)'};border:1px solid ${audio.ok ? 'rgba(34,197,94,0.3)' : 'rgba(229,9,20,0.4)'};border-radius:4px;padding:1px 6px;font-size:0.65rem;font-weight:600;color:${audio.ok ? '#4ade80' : '#ff6b6b'};">${escapeHTML(audio.label)}</span>`);
+      if (seeders) badges.push(`<span style="color:var(--muted);font-size:0.65rem;">${escapeHTML(seeders)}</span>`);
+      badges.push(`<span style="color:${source.color};font-weight:600;font-size:0.65rem;">${escapeHTML(source.label)}</span>`);
+
       const item = document.createElement('div');
-      item.className = 'stream-item';
+      item.className = 'stream-item' + (!audio.ok ? ' stream-item-warn' : '');
       item.innerHTML = `
         <span class="stream-fmt ${fmt}">${fmt.toUpperCase()}</span>
         <div class="stream-info">
           <div class="stream-name">${escapeHTML(name)}</div>
-          <div class="stream-meta">
-            ${meta ? `<span>${escapeHTML(meta)}</span>` : ''}
-            <span style="color:${source.color};font-weight:600;font-size:0.68rem;margin-left:${meta ? '0.5rem' : '0'}">
-              ${escapeHTML(source.label)}
-            </span>
+          <div class="stream-meta" style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;margin-top:0.25rem;">
+            ${badges.join('')}
           </div>
         </div>
         ${quality ? `<span class="stream-quality">${quality}</span>` : ''}
@@ -871,13 +917,24 @@ async function openEpisodePicker(series) {
       return;
     }
 
-    // Group episodes by season
+    // Group episodes by season — skip specials (season 0) and extras
     const seasons = {};
     meta.videos.forEach(ep => {
-      const s = ep.season || 1;
+      const s = ep.season;
+      // Skip season 0 (specials/extras) and episodes without a season number
+      if (!s || s === 0) return;
       if (!seasons[s]) seasons[s] = [];
       seasons[s].push(ep);
     });
+
+    // If all episodes got filtered out, include season 0 as a fallback
+    if (Object.keys(seasons).length === 0) {
+      meta.videos.forEach(ep => {
+        const s = ep.season || 1;
+        if (!seasons[s]) seasons[s] = [];
+        seasons[s].push(ep);
+      });
+    }
 
     const seasonNums = Object.keys(seasons).map(Number).sort((a,b) => a-b);
     selectedSeason = seasonNums[0];
@@ -917,15 +974,21 @@ function renderEpisodes(episodes, series) {
     item.className = 'stream-item';
     item.style.cursor = 'pointer';
 
-    const epNum  = ep.episode || ep.number || '?';
-    const title  = ep.title || `Episode ${epNum}`;
-    const aired  = ep.released ? new Date(ep.released).getFullYear() : '';
+    const epNum  = ep.episode || ep.number || ep.id?.split(':')[2] || '?';
+    const title  = ep.title || ep.name || `Episode ${epNum}`;
+    const aired  = ep.released || ep.firstAired
+      ? new Date(ep.released || ep.firstAired).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' })
+      : '';
+    const overview = ep.overview ? ep.overview.slice(0, 80) + (ep.overview.length > 80 ? '…' : '') : '';
 
     item.innerHTML = `
-      <span class="stream-quality">E${epNum}</span>
+      <span class="stream-quality" style="min-width:36px;text-align:center;">E${epNum}</span>
       <div class="stream-info">
         <div class="stream-name">${escapeHTML(title)}</div>
-        ${aired ? `<div class="stream-meta">${aired}</div>` : ''}
+        <div class="stream-meta">
+          ${aired ? `<span>${aired}</span>` : ''}
+          ${overview ? `<span style="display:block;margin-top:2px;color:var(--muted2);font-size:0.68rem;">${escapeHTML(overview)}</span>` : ''}
+        </div>
       </div>
       <button class="stream-play-btn">▶ Watch</button>
     `;
@@ -934,13 +997,13 @@ function renderEpisodes(episodes, series) {
       e.stopPropagation();
       document.getElementById('episodeModal').classList.remove('open');
       // Open stream picker for this specific episode
-      await openSeriesStreamPicker(series, ep.season || selectedSeason, ep.episode || 1, title);
+      await openSeriesStreamPicker(series, ep.season || selectedSeason, ep.episode || ep.number || parseInt(ep.id?.split(':')[2]) || 1, title);
     });
 
     item.addEventListener('click', async (e) => {
       if (e.target.classList.contains('stream-play-btn')) return;
       document.getElementById('episodeModal').classList.remove('open');
-      await openSeriesStreamPicker(series, ep.season || selectedSeason, ep.episode || 1, title);
+      await openSeriesStreamPicker(series, ep.season || selectedSeason, ep.episode || ep.number || parseInt(ep.id?.split(':')[2]) || 1, title);
     });
 
     list.appendChild(item);
