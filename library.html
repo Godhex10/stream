@@ -269,8 +269,14 @@
   </div>
 
   <!-- Genre filters (Stremio mode) -->
+  <!-- Content type toggle -->
+  <div style="display:flex;justify-content:center;gap:0.5rem;margin-bottom:1rem;">
+    <button class="genre-pill active" id="typeMovies" onclick="setContentType('movie')">🎬 Movies</button>
+    <button class="genre-pill" id="typeSeries" onclick="setContentType('series')">📺 Series</button>
+  </div>
+
   <div class="genre-filters" id="genreFilters">
-    <button class="genre-pill active" data-genre="">🎬 All</button>
+    <button class="genre-pill active" data-genre="">All</button>
     <button class="genre-pill" data-genre="action">💥 Action</button>
     <button class="genre-pill" data-genre="comedy">😂 Comedy</button>
     <button class="genre-pill" data-genre="drama">🎭 Drama</button>
@@ -279,6 +285,17 @@
     <button class="genre-pill" data-genre="romance">❤️ Romance</button>
     <button class="genre-pill" data-genre="thriller">🕵️ Thriller</button>
     <button class="genre-pill" data-genre="animation">🎨 Animation</button>
+  </div>
+
+  <!-- Episode picker modal (for series) -->
+  <div class="stream-modal-overlay" id="episodeModal">
+    <div class="stream-modal">
+      <h3 id="episodeModalTitle">Select Episode</h3>
+      <p class="stream-modal-sub" id="episodeModalSub">Choose a season and episode</p>
+      <div style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap;" id="seasonTabs"></div>
+      <div class="stream-list" id="episodeList"></div>
+      <button class="stream-modal-close" id="episodeModalClose">Cancel</button>
+    </div>
   </div>
 
   <h2 class="grid-section-title" id="gridTitle">
@@ -324,6 +341,7 @@ let currentSource  = 'stremio'; // 'stremio' | 'local'
 let currentGenre   = '';
 let currentSearch  = '';
 let selectedMovie  = null;
+let contentType    = 'movie'; // 'movie' | 'series'
 
 const moviesGrid    = document.getElementById('moviesGrid');
 const searchInput   = document.getElementById('librarySearchInput');
@@ -385,26 +403,43 @@ function doSearch() {
 /* ══════════════════════════════════════════════
     CINEMETA — fetch movie catalogue
 ══════════════════════════════════════════════ */
+/* ── Content type toggle ── */
+function setContentType(type) {
+  contentType = type;
+  currentGenre  = '';
+  currentSearch = '';
+  searchInput.value = '';
+  document.querySelectorAll('.genre-pill[data-genre]').forEach(p => p.classList.remove('active'));
+  document.querySelector('.genre-pill[data-genre=""]').classList.add('active');
+  document.getElementById('typeMovies').classList.toggle('active', type === 'movie');
+  document.getElementById('typeSeries').classList.toggle('active', type === 'series');
+  const typeLabel = type === 'movie' ? 'Movies' : 'Series';
+  document.getElementById('librarySubtitle').textContent =
+    `Browse ${typeLabel} — powered by Cinemeta`;
+  loadStremio();
+}
+
 async function loadStremio() {
   setLoading(true);
+  const typeLabel = contentType === 'series' ? 'Series' : 'Movies';
   gridTitle.textContent = currentGenre
-    ? currentGenre.charAt(0).toUpperCase() + currentGenre.slice(1) + ' Movies'
-    : 'Popular Now';
+    ? `${capitaliseGenre(currentGenre)} ${typeLabel}`
+    : `Popular ${typeLabel}`;
 
   try {
     let url;
+    const catalogType = contentType === 'series' ? 'series' : 'movie';
     if (currentGenre) {
-      // Cinemeta genre catalogue
-      url = `${CINEMETA_BASE}/catalog/movie/top/genre=${encodeURIComponent(capitaliseGenre(currentGenre))}.json`;
+      url = `${CINEMETA_BASE}/catalog/${catalogType}/top/genre=${encodeURIComponent(capitaliseGenre(currentGenre))}.json`;
     } else {
-      url = `${CINEMETA_BASE}/catalog/movie/top.json`;
+      url = `${CINEMETA_BASE}/catalog/${catalogType}/top.json`;
     }
     const res  = await fetch(url);
     const data = await res.json();
     renderCards(data.metas || [], 'stremio');
   } catch (e) {
     console.error('Cinemeta fetch failed:', e);
-    showError('Could not load movies — check your internet connection.');
+    showError('Could not load content — check your internet connection.');
   }
   setLoading(false);
 }
@@ -413,7 +448,8 @@ async function searchCinemeta(query) {
   setLoading(true);
   gridTitle.textContent = `Results for "${query}"`;
   try {
-    const url  = `${CINEMETA_BASE}/catalog/movie/top/search=${encodeURIComponent(query)}.json`;
+    const catalogType = contentType === 'series' ? 'series' : 'movie';
+    const url  = `${CINEMETA_BASE}/catalog/${catalogType}/top/search=${encodeURIComponent(query)}.json`;
     const res  = await fetch(url);
     const data = await res.json();
     renderCards(data.metas || [], 'stremio');
@@ -464,7 +500,13 @@ function renderCards(movies, source) {
         </div>
       `;
 
-      card.addEventListener('click', () => openStreamPicker(movie));
+      card.addEventListener('click', () => {
+        if (contentType === 'series') {
+          openEpisodePicker(movie);
+        } else {
+          openStreamPicker(movie);
+        }
+      });
 
       // Lazy-load the best format badge without blocking the UI
       setTimeout(() => fetchBestFormat(movie.id), 100);
@@ -678,7 +720,15 @@ async function openStreamPicker(movie) {
       `${streams.length} streams found (${sourceSummary}) — sorted by quality`;
 
     streamList.innerHTML = '';
+    renderStreamItems(streams, movie);
+  } catch (e) {
+    console.error('Stream fetch failed:', e);
+    streamList.innerHTML = `<div class="status-message">Failed to fetch streams. Check your connection.</div>`;
+  }
+}
 
+/* Reusable stream item renderer — used by both movies and series */
+function renderStreamItems(streams, movie) {
     // Sort by quality rank descending, then by seeders
     const sorted = [...streams].sort((a, b) => {
       const qDiff = getQualityRank(b) - getQualityRank(a);
@@ -780,11 +830,6 @@ async function openStreamPicker(movie) {
       item.addEventListener('click', (e) => { if (e.target !== playBtn) handleStreamClick(e); });
       streamList.appendChild(item);
     });
-
-  } catch (e) {
-    console.error('Stream fetch failed:', e);
-    streamList.innerHTML = `<div class="status-message">Failed to fetch streams. Check your connection.</div>`;
-  }
 }
 
 function showStreamError(msg) {
@@ -800,6 +845,163 @@ function showStreamError(msg) {
 
 document.getElementById('streamModalClose').addEventListener('click', () => streamModal.classList.remove('open'));
 streamModal.addEventListener('click', e => { if (e.target === streamModal) streamModal.classList.remove('open'); });
+
+/* ══════════════════════════════════════════════
+    SERIES — EPISODE PICKER
+══════════════════════════════════════════════ */
+let selectedSeason = 1;
+
+async function openEpisodePicker(series) {
+  selectedMovie = series;
+  const episodeModal = document.getElementById('episodeModal');
+  document.getElementById('episodeModalTitle').textContent = series.name || series.title;
+  document.getElementById('episodeModalSub').textContent = 'Loading episodes…';
+  document.getElementById('episodeList').innerHTML = '';
+  document.getElementById('seasonTabs').innerHTML = '';
+  episodeModal.classList.add('open');
+
+  try {
+    // Fetch series metadata from Cinemeta to get seasons/episodes
+    const res  = await fetch(`${CINEMETA_BASE}/meta/series/${series.id}.json`);
+    const data = await res.json();
+    const meta = data.meta;
+
+    if (!meta || !meta.videos || meta.videos.length === 0) {
+      document.getElementById('episodeModalSub').textContent = 'No episodes found.';
+      return;
+    }
+
+    // Group episodes by season
+    const seasons = {};
+    meta.videos.forEach(ep => {
+      const s = ep.season || 1;
+      if (!seasons[s]) seasons[s] = [];
+      seasons[s].push(ep);
+    });
+
+    const seasonNums = Object.keys(seasons).map(Number).sort((a,b) => a-b);
+    selectedSeason = seasonNums[0];
+
+    // Build season tabs
+    const seasonTabs = document.getElementById('seasonTabs');
+    seasonNums.forEach(s => {
+      const btn = document.createElement('button');
+      btn.className = 'genre-pill' + (s === selectedSeason ? ' active' : '');
+      btn.textContent = `S${s}`;
+      btn.addEventListener('click', () => {
+        selectedSeason = s;
+        document.querySelectorAll('#seasonTabs .genre-pill').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderEpisodes(seasons[s], series);
+      });
+      seasonTabs.appendChild(btn);
+    });
+
+    document.getElementById('episodeModalSub').textContent =
+      `${seasonNums.length} season${seasonNums.length !== 1 ? 's' : ''} · Click an episode to watch`;
+
+    renderEpisodes(seasons[selectedSeason], series);
+
+  } catch(e) {
+    console.error('Episode fetch failed:', e);
+    document.getElementById('episodeModalSub').textContent = 'Failed to load episodes.';
+  }
+}
+
+function renderEpisodes(episodes, series) {
+  const list = document.getElementById('episodeList');
+  list.innerHTML = '';
+
+  episodes.sort((a,b) => (a.episode||0) - (b.episode||0)).forEach(ep => {
+    const item = document.createElement('div');
+    item.className = 'stream-item';
+    item.style.cursor = 'pointer';
+
+    const epNum  = ep.episode || ep.number || '?';
+    const title  = ep.title || `Episode ${epNum}`;
+    const aired  = ep.released ? new Date(ep.released).getFullYear() : '';
+
+    item.innerHTML = `
+      <span class="stream-quality">E${epNum}</span>
+      <div class="stream-info">
+        <div class="stream-name">${escapeHTML(title)}</div>
+        ${aired ? `<div class="stream-meta">${aired}</div>` : ''}
+      </div>
+      <button class="stream-play-btn">▶ Watch</button>
+    `;
+
+    item.querySelector('.stream-play-btn').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      document.getElementById('episodeModal').classList.remove('open');
+      // Open stream picker for this specific episode
+      await openSeriesStreamPicker(series, ep.season || selectedSeason, ep.episode || 1, title);
+    });
+
+    item.addEventListener('click', async (e) => {
+      if (e.target.classList.contains('stream-play-btn')) return;
+      document.getElementById('episodeModal').classList.remove('open');
+      await openSeriesStreamPicker(series, ep.season || selectedSeason, ep.episode || 1, title);
+    });
+
+    list.appendChild(item);
+  });
+}
+
+async function openSeriesStreamPicker(series, season, episode, epTitle) {
+  const fullTitle = `${series.name || series.title} S${season}E${episode} — ${epTitle}`;
+  const streamId  = `${series.id}:${season}:${episode}`;
+
+  selectedMovie = { ...series, _streamId: streamId, _fullTitle: fullTitle };
+  document.getElementById('streamModalTitle').textContent = fullTitle;
+  document.getElementById('streamModalSub').textContent = '🔍 Searching all sources…';
+  streamList.innerHTML = `
+    <div style="color:var(--muted);font-size:0.85rem;padding:2rem 0;text-align:center;">
+      <div style="margin-bottom:0.5rem;font-size:1.5rem">⏳</div>
+      Searching Torrentio, AIOStreams & Nuvio…
+    </div>`;
+  streamModal.classList.add('open');
+
+  try {
+    const [torrentioStreams, aioStreams, nuvioStreams] = await Promise.all([
+      fetchFromSource(`${TORRENTIO_BASE}/stream/series/${streamId}.json`, 'torrentio'),
+      fetchFromSource(`${AIOSTREAMS_BASE}/stream/series/${streamId}.json`, 'aiostreams'),
+      fetchFromSource(`${NUVIO_BASE}/stream/series/${streamId}.json`, 'nuvio')
+    ]);
+
+    const seen = new Set();
+    const merged = [];
+    for (const s of [...nuvioStreams, ...torrentioStreams, ...aioStreams]) {
+      const key = s.infoHash || s.url || s.name;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      merged.push(s);
+    }
+
+    streamCache[streamId] = merged;
+
+    if (merged.length === 0) {
+      streamList.innerHTML = `<div class="status-message">No streams found for this episode.</div>`;
+      document.getElementById('streamModalSub').textContent = 'No streams found.';
+      return;
+    }
+
+    document.getElementById('streamModalSub').textContent =
+      `${merged.length} streams found — Nuvio ✅ = no RD needed`;
+
+    renderStreamItems(merged, { ...series, id: streamId, name: fullTitle, _fullTitle: fullTitle });
+
+  } catch(e) {
+    streamList.innerHTML = `<div class="status-message">Failed to fetch streams.</div>`;
+  }
+}
+
+document.getElementById('episodeModalClose').addEventListener('click', () => {
+  document.getElementById('episodeModal').classList.remove('open');
+});
+document.getElementById('episodeModal').addEventListener('click', e => {
+  if (e.target === document.getElementById('episodeModal'))
+    document.getElementById('episodeModal').classList.remove('open');
+});
 
 /* ══════════════════════════════════════════════
     REAL-DEBRID — convert magnet to direct stream URL

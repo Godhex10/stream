@@ -1146,8 +1146,15 @@ video.addEventListener('pause', () => {
   if (!isSyncingFromRemote) broadcastSync({ type: 'pause', time: video.currentTime });
 });
 
+// Debounce seek broadcasts — prevents feedback loop where
+// both clients keep telling each other to seek endlessly.
+let seekBroadcastTimer = null;
 video.addEventListener('seeked', () => {
-  if (!isSyncingFromRemote) broadcastSync({ type: 'seek', time: video.currentTime });
+  if (isSyncingFromRemote) return;
+  clearTimeout(seekBroadcastTimer);
+  seekBroadcastTimer = setTimeout(() => {
+    broadcastSync({ type: 'seek', time: video.currentTime });
+  }, 300);
 });
 
 video.addEventListener('timeupdate', updateProgress);
@@ -1240,19 +1247,36 @@ function handleRemoteSync(payload) {
     setTimeout(() => { isSyncingFromRemote = false; }, 300);
 
   } else if (payload.type === 'play') {
-    if (Math.abs(video.currentTime - payload.time) > 1.5) {
+    const timeDiff = Math.abs(video.currentTime - payload.time);
+    if (timeDiff > 1.5) {
+      // Need to seek first, then play — wait for seeked event
+      const onSeeked = () => {
+        video.removeEventListener('seeked', onSeeked);
+        const wasMuted = video.muted;
+        video.muted = true;
+        video.play()
+          .then(() => { setTimeout(() => { video.muted = wasMuted; }, 300); })
+          .catch(() => {
+            video.muted = wasMuted;
+            pendingRemotePlay = payload.time;
+            document.getElementById('syncOverlay').style.display = 'flex';
+          })
+          .finally(() => { setTimeout(() => { isSyncingFromRemote = false; }, 500); });
+      };
+      video.addEventListener('seeked', onSeeked);
       video.currentTime = payload.time;
+    } else {
+      const wasMuted = video.muted;
+      video.muted = true;
+      video.play()
+        .then(() => { setTimeout(() => { video.muted = wasMuted; }, 300); })
+        .catch(() => {
+          video.muted = wasMuted;
+          pendingRemotePlay = payload.time;
+          document.getElementById('syncOverlay').style.display = 'flex';
+        })
+        .finally(() => { isSyncingFromRemote = false; });
     }
-    const wasMuted = video.muted;
-    video.muted = true;
-    video.play()
-      .then(() => { setTimeout(() => { video.muted = wasMuted; }, 300); })
-      .catch(() => {
-        video.muted = wasMuted;
-        pendingRemotePlay = payload.time;
-        document.getElementById('syncOverlay').style.display = 'flex';
-      })
-      .finally(() => { isSyncingFromRemote = false; });
 
   } else if (payload.type === 'pause') {
     video.currentTime = payload.time;
@@ -1261,7 +1285,9 @@ function handleRemoteSync(payload) {
 
   } else if (payload.type === 'seek') {
     video.currentTime = payload.time;
-    setTimeout(() => { isSyncingFromRemote = false; }, 200);
+    // Hold the flag for 800ms — long enough for the browser to fire its
+    // own 'seeked' event after we set currentTime, preventing bounce-back
+    setTimeout(() => { isSyncingFromRemote = false; }, 800);
 
   } else if (payload.type === 'state_response') {
     hasSynced = true;
@@ -1298,20 +1324,32 @@ function dismissSyncOverlay() {
   document.getElementById('syncOverlay').style.display = 'none';
   isSyncingFromRemote = true;
   hasSynced = true;
-
-  if (pendingRemotePlay !== null) {
-    video.currentTime = pendingRemotePlay;
-    pendingRemotePlay = null;
-  }
-
   video.muted = false;
-  video.play()
-    .catch(() => {
-      // Autoplay still blocked — that's fine, user can press play manually
-    })
-    .finally(() => {
-      setTimeout(() => { isSyncingFromRemote = false; }, 200);
-    });
+
+  const targetTime = pendingRemotePlay;
+  pendingRemotePlay = null;
+
+  if (targetTime !== null && Math.abs(video.currentTime - targetTime) > 1) {
+    // Need to seek first — wait for 'seeked' event before playing
+    // so the browser has buffered the right position
+    const onSeeked = () => {
+      video.removeEventListener('seeked', onSeeked);
+      video.play()
+        .catch(() => {})
+        .finally(() => {
+          setTimeout(() => { isSyncingFromRemote = false; }, 500);
+        });
+    };
+    video.addEventListener('seeked', onSeeked);
+    video.currentTime = targetTime;
+  } else {
+    // Already at the right position — just play
+    video.play()
+      .catch(() => {})
+      .finally(() => {
+        setTimeout(() => { isSyncingFromRemote = false; }, 300);
+      });
+  }
 
   addSystemMsg('You synced to the room ✅');
 }
