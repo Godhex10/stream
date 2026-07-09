@@ -619,65 +619,89 @@ async function fetchAllStreams(imdbId) {
 
 /* ── Stream name parsing helpers ── */
 
-/* Parse format from stream name/filename */
+/* ── Stream parsing helpers ──
+   Torrentio packs ALL detail into stream.description (multiline):
+   Line 1: full torrent filename  e.g. "Movie.2024.2160p.BluRay.DTS.x265-GROUP"
+   Line 2: emoji meta            e.g. "💾 28.6 GB · 👤 45 · ⚙️ zurg"
+   stream.name is the SHORT label e.g. "Torrentio 4k DV | HDR"
+   We parse BOTH to get the full picture.
+*/
+
+/* Get the full detail string — prefer description, fall back to title */
+function getFullDetail(stream) {
+  return (stream.description || stream.title || stream.name || '').toUpperCase();
+}
+
+/* Get display name — use name for the heading, description line 1 as subtitle */
+function getStreamDisplayName(stream) {
+  const name = stream.name || '';
+  // description line 1 is usually the full torrent filename
+  const descLines = (stream.description || stream.title || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const filename  = descLines[0] || '';
+  return { name, filename };
+}
+
+/* Parse format from full detail string */
 function getMagnetFmt(stream) {
-  const name = (stream.name || stream.title || stream.behaviorHints?.filename || '').toLowerCase();
-  if (name.includes('.mp4')  || name.includes('mp4'))  return 'mp4';
-  if (name.includes('.webm') || name.includes('webm')) return 'webm';
-  if (name.includes('.mkv')  || name.includes('mkv'))  return 'mkv';
-  if (name.includes('.avi')  || name.includes('avi'))  return 'mkv';
+  const full = getFullDetail(stream) + (stream.behaviorHints?.filename || '').toUpperCase();
+  if (full.includes('.MP4')  || full.includes('MP4'))  return 'mp4';
+  if (full.includes('.WEBM') || full.includes('WEBM')) return 'webm';
+  if (full.includes('.MKV')  || full.includes('MKV'))  return 'mkv';
+  if (full.includes('.AVI')  || full.includes('AVI'))  return 'mkv';
   return 'mkv';
 }
 
-/* Parse quality */
+/* Parse quality from name or full detail */
 function getQualityLabel(stream) {
-  const name = stream.name || stream.title || '';
-  const match = name.match(/4K|2160p|1080p|720p|480p|360p/i);
-  return match ? match[0].toUpperCase() : '';
+  const full = (stream.name || '') + ' ' + getFullDetail(stream);
+  const match = full.match(/4K|2160[Pp]|1080[Pp]|720[Pp]|480[Pp]|360[Pp]/i);
+  return match ? match[0].toUpperCase().replace('P','p') : '';
 }
 
 /* Quality rank for sorting */
 function getQualityRank(stream) {
-  const q = getQualityLabel(stream);
+  const q = getQualityLabel(stream).toUpperCase();
   const ranks = { '4K': 5, '2160P': 5, '1080P': 4, '720P': 3, '480P': 2, '360P': 1 };
   return ranks[q] || 2;
 }
 
-/* Parse audio codec from stream name */
+/* Parse audio codec from full detail string */
 function getAudioInfo(stream) {
-  const name = (stream.name || stream.title || '').toUpperCase();
-  // Detect common audio codecs
-  if (name.includes('TRUEHD') || name.includes('TRUE HD')) return { label: 'TrueHD', ok: true };
-  if (name.includes('ATMOS'))   return { label: 'Atmos',  ok: true };
-  if (name.includes('EAC3') || name.includes('E-AC3') || name.includes('E AC3')) return { label: 'EAC3', ok: true };
-  if (name.includes('DTS-HD') || name.includes('DTSHD'))  return { label: 'DTS-HD', ok: true };
-  if (name.includes('DTS'))   return { label: 'DTS',   ok: true };
-  if (name.includes('AC3') || name.includes('DD5') || name.includes('DOLBY')) return { label: 'AC3', ok: true };
-  if (name.includes('AAC'))   return { label: 'AAC',   ok: true };
-  if (name.includes('MP3'))   return { label: 'MP3',   ok: true };
-  if (name.includes('FLAC'))  return { label: 'FLAC',  ok: true };
-  if (name.includes('OPUS'))  return { label: 'Opus',  ok: true };
-  // Indicators that there might be NO audio
-  if (name.includes('MUTED') || name.includes('NO AUDIO') || name.includes('SILENT')) {
-    return { label: '🔇 No Audio', ok: false };
-  }
-  // CAM rips often have bad or no audio
-  if (name.includes('CAM') || name.includes('CAMRIP') || name.includes('HDCAM')) {
-    return { label: '⚠️ CAM', ok: false };
-  }
-  // No audio info found — unknown, don't warn
+  const full = getFullDetail(stream);
+  if (full.includes('TRUEHD'))  return { label: 'TrueHD', ok: true };
+  if (full.includes('ATMOS'))   return { label: 'Atmos',  ok: true };
+  if (full.includes('EAC3') || full.includes('E-AC3')) return { label: 'EAC3', ok: true };
+  if (full.includes('DTS-HD') || full.includes('DTSHD')) return { label: 'DTS-HD', ok: true };
+  if (full.includes('DTS'))     return { label: 'DTS',    ok: true };
+  if (full.includes('AC3') || full.includes('DD5.1') || full.includes('DD 5'))
+                                return { label: 'AC3',    ok: true };
+  if (full.includes('AAC'))     return { label: 'AAC',    ok: true };
+  if (full.includes('MP3'))     return { label: 'MP3',    ok: true };
+  if (full.includes('FLAC'))    return { label: 'FLAC',   ok: true };
+  if (full.includes('OPUS'))    return { label: 'Opus',   ok: true };
+  if (full.includes('MUTED') || full.includes('NO AUDIO') || full.includes('SILENT'))
+                                return { label: '🔇 No Audio', ok: false };
+  if (full.includes('CAMRIP') || full.includes('HDCAM') || full.includes('\nCAM'))
+                                return { label: '⚠️ CAM', ok: false };
   return { label: '', ok: true };
 }
 
-/* Parse file size from stream (Torrentio puts it in stream.size in bytes) */
+/* Parse file size — check stream.size first (bytes), then parse from description */
 function getSizeInfo(stream) {
-  // Torrentio returns size in bytes in the stream.size field
-  if (stream.size) return formatBytes(stream.size);
-  // Some addons embed size in the title string like "2.1 GB"
-  const name = stream.name || stream.title || '';
-  const match = name.match(/(\d+\.?\d*)\s*(GB|MB)/i);
+  if (stream.size && stream.size > 0) return formatBytes(stream.size);
+  // Parse from description/title — Torrentio format: "💾 28.6 GB" or "28.6 GB"
+  const desc = stream.description || stream.title || '';
+  const match = desc.match(/(\d+\.?\d*)\s*(GB|MB)/i);
   if (match) return `${match[1]} ${match[2].toUpperCase()}`;
   return '';
+}
+
+/* Parse seeder count from description — "👤 45" */
+function getSeederInfo(stream) {
+  if (stream.seeders) return stream.seeders;
+  const desc = stream.description || stream.title || '';
+  const match = desc.match(/👤\s*(\d+)/);
+  return match ? parseInt(match[1]) : 0;
 }
 
 /* Get streamable URL */
@@ -779,30 +803,42 @@ function renderStreamItems(streams, movie) {
     });
 
     sorted.slice(0, 30).forEach(stream => {
-      const fmt       = getMagnetFmt(stream);
-      const quality   = getQualityLabel(stream);
-      const audio     = getAudioInfo(stream);
-      const sizeLabel = getSizeInfo(stream);
-      const name      = stream.name || stream.title || 'Unknown source';
-      const seeders   = stream.seeders ? `👥 ${stream.seeders}` : '';
-      const source    = SOURCE_LABELS[stream._source] || { label: stream._source, color: '#888' };
-      const streamUrl = getStreamUrl(stream);
+      const fmt         = getMagnetFmt(stream);
+      const quality     = getQualityLabel(stream);
+      const audio       = getAudioInfo(stream);
+      const sizeLabel   = getSizeInfo(stream);
+      const seeders     = getSeederInfo(stream);
+      const source      = SOURCE_LABELS[stream._source] || { label: stream._source, color: '#888' };
+      const { name, filename } = getStreamDisplayName(stream);
+      const displayName = name || 'Unknown source';
+      const streamUrl   = getStreamUrl(stream);
 
       if (!streamUrl) return;
 
-      // Build badge row: size + audio + source
+      // Build badge row: size + audio + seeders + source
       const badges = [];
-      if (sizeLabel) badges.push(`<span style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:1px 6px;font-size:0.65rem;font-weight:600;color:#ccc;">💾 ${escapeHTML(sizeLabel)}</span>`);
-      if (audio.label) badges.push(`<span style="background:${audio.ok ? 'rgba(34,197,94,0.12)' : 'rgba(229,9,20,0.15)'};border:1px solid ${audio.ok ? 'rgba(34,197,94,0.3)' : 'rgba(229,9,20,0.4)'};border-radius:4px;padding:1px 6px;font-size:0.65rem;font-weight:600;color:${audio.ok ? '#4ade80' : '#ff6b6b'};">${escapeHTML(audio.label)}</span>`);
-      if (seeders) badges.push(`<span style="color:var(--muted);font-size:0.65rem;">${escapeHTML(seeders)}</span>`);
-      badges.push(`<span style="color:${source.color};font-weight:600;font-size:0.65rem;">${escapeHTML(source.label)}</span>`);
+      if (sizeLabel) badges.push(
+        `<span style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.14);border-radius:4px;padding:1px 7px;font-size:0.65rem;font-weight:700;color:#ddd;">💾 ${escapeHTML(sizeLabel)}</span>`
+      );
+      if (audio.label) badges.push(
+        `<span style="background:${audio.ok ? 'rgba(34,197,94,0.12)' : 'rgba(229,9,20,0.15)'};border:1px solid ${audio.ok ? 'rgba(34,197,94,0.3)' : 'rgba(229,9,20,0.4)'};border-radius:4px;padding:1px 7px;font-size:0.65rem;font-weight:700;color:${audio.ok ? '#4ade80' : '#ff6b6b'};">${escapeHTML(audio.label)}</span>`
+      );
+      if (seeders) badges.push(
+        `<span style="color:var(--muted);font-size:0.65rem;">👥 ${seeders}</span>`
+      );
+      badges.push(
+        `<span style="color:${source.color};font-weight:600;font-size:0.65rem;">${escapeHTML(source.label)}</span>`
+      );
 
       const item = document.createElement('div');
       item.className = 'stream-item' + (!audio.ok ? ' stream-item-warn' : '');
       item.innerHTML = `
         <span class="stream-fmt ${fmt}">${fmt.toUpperCase()}</span>
         <div class="stream-info">
-          <div class="stream-name">${escapeHTML(name)}</div>
+          <div class="stream-name">${escapeHTML(displayName)}</div>
+          ${filename && filename !== displayName
+            ? `<div style="font-size:0.7rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px;">${escapeHTML(filename)}</div>`
+            : ''}
           <div class="stream-meta" style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;margin-top:0.25rem;">
             ${badges.join('')}
           </div>
