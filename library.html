@@ -795,11 +795,41 @@ async function openStreamPicker(movie) {
 
 /* Reusable stream item renderer — used by both movies and series */
 function renderStreamItems(streams, movie) {
-    // Sort by quality rank descending, then by seeders
-    const sorted = [...streams].sort((a, b) => {
-      const qDiff = getQualityRank(b) - getQualityRank(a);
-      if (qDiff !== 0) return qDiff;
-      return (b.seeders || 0) - (a.seeders || 0);
+    // Step 1 — Filter out garbage streams:
+    // - No audio (CAM rips, muted, silent)
+    // - No streamable URL
+    // - Likely trailers/samples (very small files under 100MB)
+    // - Scene/sample releases with keywords indicating no full movie
+    const filtered = streams.filter(stream => {
+      const audio = getAudioInfo(stream);
+      if (!audio.ok) return false; // remove no-audio streams
+
+      const url = getStreamUrl(stream);
+      if (!url) return false; // must have a URL
+
+      // Filter out tiny files that are likely trailers/samples
+      const size = stream.size || 0;
+      if (size > 0 && size < 100 * 1024 * 1024) return false; // under 100MB
+
+      // Filter out streams with keywords suggesting no actual movie
+      const name = (stream.name || stream.title || stream.description || '').toUpperCase();
+      const badKeywords = ['TRAILER', 'SAMPLE', 'FEATURETTE', 'DELETED SCENE', 'EXTRAS', 'BONUS', 'BEHIND THE SCENES'];
+      if (badKeywords.some(k => name.includes(k))) return false;
+
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      streamList.innerHTML = `<div class="status-message">No clean streams found.<br><span style="font-size:0.8rem;color:var(--muted2)">All available streams were filtered out (no audio / too small).<br>Try a different movie.</span></div>`;
+      return;
+    }
+
+    // Step 2 — Sort smallest to biggest file size
+    // Unknown size goes to the end
+    const sorted = [...filtered].sort((a, b) => {
+      const sizeA = a.size || Infinity;
+      const sizeB = b.size || Infinity;
+      return sizeA - sizeB;
     });
 
     sorted.slice(0, 30).forEach(stream => {
