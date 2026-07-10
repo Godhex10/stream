@@ -1052,8 +1052,9 @@ function initAbly() {
     // Main room channel for video sync, chat, reactions
     channel = ablyClient.channels.get('room:' + roomId);
 
-    // Subscribe to video sync events
+    // Subscribe to video sync events — ignore our own messages
     channel.subscribe('video_sync', (msg) => {
+      if (msg.clientId === ablyClient.auth.clientId) return;
       handleRemoteSync(msg.data);
     });
 
@@ -1135,14 +1136,25 @@ function loadVideo() {
   broadcastSync({ type: 'load', src: url, title: document.getElementById('roomNameDisplay').textContent });
 }
 
+// Track whether video has actually started playing at least once
+// This prevents broadcasting pause events from initial load or failed autoplay
+let hasPlayedOnce = false;
+
 video.addEventListener('play', () => {
   updatePlayIcon(true);
+  hasPlayedOnce = true;
   if (!isSyncingFromRemote) broadcastSync({ type: 'play', time: video.currentTime });
 });
 
 video.addEventListener('pause', () => {
   updatePlayIcon(false);
-  if (!isSyncingFromRemote) broadcastSync({ type: 'pause', time: video.currentTime });
+  // Only broadcast pause if:
+  // 1. Not caused by remote sync
+  // 2. Video has actually played before (not initial load/failed autoplay)
+  // 3. Video is not just buffering (readyState check)
+  if (!isSyncingFromRemote && hasPlayedOnce && video.readyState >= 2) {
+    broadcastSync({ type: 'pause', time: video.currentTime });
+  }
 });
 
 // Debounce seek broadcasts — prevents feedback loop where
@@ -1564,28 +1576,32 @@ window.addEventListener('DOMContentLoaded', () => {
     const videoSourceInput = document.getElementById('videoUrlInput');
     if (videoSourceInput) videoSourceInput.value = directStreamUrl;
 
-    // Load video immediately for everyone — joiner starts from beginning
-    // and can seek to where others are manually
+    // Load video immediately for everyone
     setupVideoSource(directStreamUrl);
-    addSystemMsg('Movie loaded 🎬 — seek to where everyone is!');
+    addSystemMsg('Movie loaded 🎬');
 
-    // Wait for Ably then broadcast so others know what movie loaded
+    // Only broadcast load if we're the first person in the room (host).
+    // Guests already have the URL from the share link — they don't need
+    // to rebroadcast it back, which would cause the host's video to reload.
     let attempts = 0;
     const tryBroadcast = () => {
       attempts++;
-      if (isChannelReady) {
+      if (!isChannelReady) {
+        if (attempts < 50) setTimeout(tryBroadcast, 200);
+        else showToast('⚠️ Could not connect — check connection');
+        return;
+      }
+      // Only broadcast if we're the only viewer (we're the host)
+      if (viewers.size <= 1) {
         broadcastSync({
           type: 'load',
           src: directStreamUrl,
           title: directTitle || document.getElementById('roomNameDisplay').textContent
         });
-      } else if (attempts < 50) {
-        setTimeout(tryBroadcast, 200);
-      } else {
-        showToast('⚠️ Could not connect — check connection');
       }
+      // Guests just load locally and stay silent — host is already playing
     };
-    setTimeout(tryBroadcast, 300);
+    setTimeout(tryBroadcast, 500);
   }
 });
 </script>
