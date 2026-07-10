@@ -849,6 +849,13 @@
   <div class="video-col">
     <div class="player-wrap">
 
+      <!-- Hide url-overlay immediately if stream URL is in params (before JS runs) -->
+      <script>
+        if (new URLSearchParams(location.search).get('stream')) {
+          document.write('<style>#urlOverlay{display:none!important}</style>');
+        }
+      </script>
+
       <!-- Sync overlay: shown when browser blocks autoplay for remote play events -->
       <div id="syncOverlay" onclick="dismissSyncOverlay()">
         <div class="sync-play-icon">▶</div>
@@ -1257,14 +1264,24 @@ function handleRemoteSync(payload) {
     if (Math.abs(video.currentTime - payload.time) > 1.5) {
       video.currentTime = payload.time;
     }
-    const wasMuted = video.muted;
+    // Always play muted first — browser allows muted autoplay without user gesture.
+    // Show the sync overlay so the guest clicks to unmute/confirm playback.
+    // This is the only reliable cross-browser approach.
     video.muted = true;
     video.play()
-      .then(() => { setTimeout(() => { video.muted = wasMuted; }, 300); })
+      .then(() => {
+        // Muted autoplay worked — show overlay so guest can click to unmute
+        pendingRemotePlay = null;
+        document.getElementById('syncOverlay').style.display = 'flex';
+        const small = document.querySelector('#syncOverlay small');
+        if (small) small.textContent = 'Host pressed play — click to unmute & join';
+      })
       .catch(() => {
-        video.muted = wasMuted;
+        // Even muted autoplay failed — show overlay for manual start
         pendingRemotePlay = payload.time;
         document.getElementById('syncOverlay').style.display = 'flex';
+        const small = document.querySelector('#syncOverlay small');
+        if (small) small.textContent = 'Host is watching — click to join';
       })
       .finally(() => { isSyncingFromRemote = false; });
 
@@ -1285,17 +1302,20 @@ function handleRemoteSync(payload) {
 function dismissSyncOverlay() {
   document.getElementById('syncOverlay').style.display = 'none';
   isSyncingFromRemote = true;
+
+  // Unmute and seek to pending time if any
+  video.muted = false;
   if (pendingRemotePlay !== null) {
     video.currentTime = pendingRemotePlay;
     pendingRemotePlay = null;
   }
-  video.muted = false;
+
+  // Now play — this works because user just clicked (user gesture)
   video.play()
     .catch(() => {})
     .finally(() => {
       setTimeout(() => { isSyncingFromRemote = false; }, 200);
     });
-  addSystemMsg('Playback resumed ✅');
 }
 
 /* ══════════════════════════════════════════════
