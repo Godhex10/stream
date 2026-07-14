@@ -1228,11 +1228,19 @@ document.getElementById('fullscreenBtn').addEventListener('click', () => {
 
 function setupVideoSource(url) {
   video.src = url;
-  video.classList.remove('video-hidden'); // show video
+  video.classList.remove('video-hidden');
   urlOverlay.style.display = 'none';
   videoLoaded = true;
   video.load();
-  if (url.includes('real-debrid.com') || url.includes('rdb.so')) {
+
+  // Warn if stream is H.265/HEVC — shows black on mobile/low-end devices
+  const urlUpper = url.toUpperCase();
+  const isHEVC = urlUpper.includes('X265') || urlUpper.includes('H265') ||
+                 urlUpper.includes('HEVC') || urlUpper.includes('.265');
+  if (isHEVC) {
+    showToast('⚠️ H.265 stream — may show black on mobile/low-end devices');
+    addSystemMsg('⚠️ This stream uses H.265 codec which may not play on all devices. If you see black screen, go back and pick an x264 stream instead.');
+  } else if (url.includes('real-debrid.com') || url.includes('rdb.so')) {
     showToast('🎬 Stream loaded — press play!');
   }
 }
